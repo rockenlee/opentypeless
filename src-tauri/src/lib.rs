@@ -1,6 +1,9 @@
+pub mod agent;
 pub mod app_detector;
 pub mod audio;
 pub mod llm;
+pub mod media;
+pub mod notify;
 pub mod output;
 pub mod pipeline;
 pub mod storage;
@@ -32,6 +35,19 @@ struct HotkeyModeCache(Arc<Mutex<String>>);
 /// Cached close_to_tray setting to avoid blocking I/O in the window close handler.
 struct CloseToTrayCache(Arc<Mutex<bool>>);
 
+/// Cached (modifiers, key) of the translate-hotkey shortcut. The dispatcher
+/// uses this to tell apart "start/stop recording" presses from "toggle
+/// translate mode" presses. We store mods+key rather than the `Shortcut`
+/// itself because `Shortcut`'s `PartialEq` compares unique instance IDs
+/// (not key bindings) — comparing two `Shortcut`s built from the same
+/// mods+key returns false. `None` = no translate hotkey is bound.
+struct TranslateHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
+
+/// Cached (modifiers, key) of the agent-hotkey shortcut. Pressing this fires
+/// a "forced agent" recording — whole transcript routed to Hermes regardless
+/// of trigger-word prefix. Same comparison rationale as `TranslateHotkeyCache`.
+struct AgentHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
+
 /// Session token for cloud providers. Set by the frontend after Better Auth login.
 /// The Rust pipeline reads this when creating cloud STT/LLM providers.
 pub struct SessionTokenStore(pub Arc<Mutex<String>>);
@@ -39,6 +55,14 @@ pub struct SessionTokenStore(pub Arc<Mutex<String>>);
 /// Managed tray icon handle for dynamic menu/tooltip updates.
 pub struct TrayHandle {
     pub tray: Mutex<tauri::tray::TrayIcon>,
+}
+
+#[derive(serde::Serialize)]
+struct AudioCaptureTestResult {
+    duration_ms: u64,
+    chunks: usize,
+    bytes: usize,
+    max_volume: f32,
 }
 
 /// Persisted window position and size.
@@ -130,6 +154,49 @@ async fn stop_recording(state: tauri::State<'_, pipeline::PipelineHandle>) -> Re
 fn abort_recording(state: tauri::State<'_, pipeline::PipelineHandle>) -> Result<(), String> {
     state.abort();
     Ok(())
+}
+
+#[tauri::command]
+async fn test_audio_capture() -> Result<AudioCaptureTestResult, String> {
+    let started = std::time::Instant::now();
+    let (mut handle, mut audio_rx) =
+        audio::AudioCaptureHandle::start(audio::AudioConfig::default())
+            .map_err(|e| e.to_string())?;
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(3));
+    tokio::pin!(deadline);
+
+    let mut chunks = 0usize;
+    let mut bytes = 0usize;
+    let mut max_volume = 0.0f32;
+
+    loop {
+        tokio::select! {
+            maybe_chunk = audio_rx.recv() => {
+                match maybe_chunk {
+                    Some(chunk) => {
+                        chunks += 1;
+                        bytes += chunk.len();
+                        max_volume = max_volume.max(handle.get_volume());
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                max_volume = max_volume.max(handle.get_volume());
+            }
+            _ = &mut deadline => {
+                break;
+            }
+        }
+    }
+
+    handle.stop();
+    Ok(AudioCaptureTestResult {
+        duration_ms: started.elapsed().as_millis() as u64,
+        chunks,
+        bytes,
+        max_volume,
+    })
 }
 
 #[tauri::command]
@@ -277,6 +344,52 @@ async fn test_stt_connection(
         }
         _ => Err(format!("Unknown STT provider: {}", provider)),
     }
+}
+
+#[tauri::command]
+async fn test_agent(config: storage::AppConfig) -> Result<String, String> {
+    agent::test_agent(config).await.map_err(|e| e.to_string())
+}
+
+// Backward-compat alias for callers that still send the old command name.
+#[tauri::command]
+async fn test_hermes_agent(config: storage::AppConfig) -> Result<String, String> {
+    test_agent(config).await
+}
+
+#[tauri::command]
+async fn test_agent_route(
+    app: tauri::AppHandle,
+    config: storage::AppConfig,
+    text: String,
+) -> Result<String, String> {
+    let prompt = agent::parse_agent_prompt(&text)
+        .ok_or_else(|| "Text does not start with an agent trigger word".to_string())?;
+    let request = agent::AgentRequest {
+        prompt,
+        app_context: app_detector::AppContext::default(),
+        selected_text: None,
+        config,
+    };
+    let response = agent::run_agent(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    pipeline::show_agent_result_window(&app, response.clone()).map_err(|e| e.to_string())?;
+    Ok(response)
+}
+
+#[tauri::command]
+async fn test_hermes_route(
+    app: tauri::AppHandle,
+    config: storage::AppConfig,
+    text: String,
+) -> Result<String, String> {
+    test_agent_route(app, config, text).await
+}
+
+#[tauri::command]
+fn get_last_agent_result() -> Option<String> {
+    pipeline::latest_agent_result()
 }
 
 #[tauri::command]
@@ -630,6 +743,14 @@ async fn clear_history(state: tauri::State<'_, storage::HistoryStore>) -> Result
 }
 
 #[tauri::command]
+async fn delete_history_entry(
+    state: tauri::State<'_, storage::HistoryStore>,
+    id: i64,
+) -> Result<(), String> {
+    state.remove(id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_dictionary(
     state: tauri::State<'_, storage::DictionaryStore>,
 ) -> Result<Vec<storage::DictionaryEntry>, String> {
@@ -699,32 +820,124 @@ async fn set_auto_start(
     Ok(())
 }
 
+/// Re-register both the recording hotkey and the translate-toggle hotkey from
+/// the supplied config. Unregisters everything first to ensure a clean slate.
+/// Also updates `TranslateHotkeyCache` so the dispatcher can recognise the
+/// translate press.
+fn reregister_all_hotkeys(
+    app: &tauri::AppHandle,
+    config: &storage::AppConfig,
+) -> Result<(), String> {
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| e.to_string())?;
+
+    let recording = parse_hotkey(&config.hotkey).unwrap_or_else(default_shortcut);
+    if let Err(e) = app.global_shortcut().register(recording) {
+        tracing::warn!(
+            "Failed to register recording hotkey '{}' (may be occupied): {e}",
+            config.hotkey
+        );
+    }
+
+    let translate = if config.translate_hotkey.trim().is_empty() {
+        None
+    } else {
+        parse_hotkey(&config.translate_hotkey)
+    };
+    let translate_signature = translate.as_ref().map(|s| (s.mods, s.key));
+    if let Some(t) = translate {
+        if let Err(e) = app.global_shortcut().register(t) {
+            tracing::warn!(
+                "Failed to register translate hotkey '{}' (may be occupied): {e}",
+                config.translate_hotkey
+            );
+        }
+    }
+    if let Some(cache) = app.try_state::<TranslateHotkeyCache>() {
+        *cache.0.lock().unwrap_or_else(|e| e.into_inner()) = translate_signature;
+    }
+
+    let agent = if config.agent_hotkey.trim().is_empty() {
+        None
+    } else {
+        parse_hotkey(&config.agent_hotkey)
+    };
+    let agent_signature = agent.as_ref().map(|s| (s.mods, s.key));
+    if let Some(a) = agent {
+        if let Err(e) = app.global_shortcut().register(a) {
+            tracing::warn!(
+                "Failed to register agent hotkey '{}' (may be occupied): {e}",
+                config.agent_hotkey
+            );
+        }
+    }
+    if let Some(cache) = app.try_state::<AgentHotkeyCache>() {
+        *cache.0.lock().unwrap_or_else(|e| e.into_inner()) = agent_signature;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn update_hotkey(
     app: tauri::AppHandle,
     config_state: tauri::State<'_, storage::ConfigManager>,
     hotkey: String,
 ) -> Result<(), String> {
-    let new_shortcut =
-        parse_hotkey(&hotkey).ok_or_else(|| format!("Invalid hotkey: {}", hotkey))?;
+    // Validate before mutating state — empty string is allowed (means "no binding").
+    if !hotkey.trim().is_empty() && parse_hotkey(&hotkey).is_none() {
+        return Err(format!("Invalid hotkey: {}", hotkey));
+    }
 
-    // Unregister all existing shortcuts, then register the new one
-    // (the global handler from with_handler is still active)
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|e| e.to_string())?;
-    app.global_shortcut()
-        .register(new_shortcut)
-        .map_err(|e| e.to_string())?;
-
-    // Save updated hotkey to config
     let mut config = config_state.load().await.map_err(|e| e.to_string())?;
     config.hotkey = hotkey;
     config_state
         .save(&config)
         .await
         .map_err(|e| e.to_string())?;
+    reregister_all_hotkeys(&app, &config)?;
+    Ok(())
+}
 
+#[tauri::command]
+async fn update_translate_hotkey(
+    app: tauri::AppHandle,
+    config_state: tauri::State<'_, storage::ConfigManager>,
+    hotkey: String,
+) -> Result<(), String> {
+    // Empty string is valid → disables the translate hotkey entirely.
+    if !hotkey.trim().is_empty() && parse_hotkey(&hotkey).is_none() {
+        return Err(format!("Invalid hotkey: {}", hotkey));
+    }
+
+    let mut config = config_state.load().await.map_err(|e| e.to_string())?;
+    config.translate_hotkey = hotkey;
+    config_state
+        .save(&config)
+        .await
+        .map_err(|e| e.to_string())?;
+    reregister_all_hotkeys(&app, &config)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_agent_hotkey(
+    app: tauri::AppHandle,
+    config_state: tauri::State<'_, storage::ConfigManager>,
+    hotkey: String,
+) -> Result<(), String> {
+    // Empty string is valid → disables the agent hotkey entirely.
+    if !hotkey.trim().is_empty() && parse_hotkey(&hotkey).is_none() {
+        return Err(format!("Invalid hotkey: {}", hotkey));
+    }
+
+    let mut config = config_state.load().await.map_err(|e| e.to_string())?;
+    config.agent_hotkey = hotkey;
+    config_state
+        .save(&config)
+        .await
+        .map_err(|e| e.to_string())?;
+    reregister_all_hotkeys(&app, &config)?;
     Ok(())
 }
 
@@ -736,19 +949,17 @@ fn pause_hotkey(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Re-register the current hotkey from config after recording is done.
+/// Re-register both the recording hotkey and the translate-toggle hotkey from
+/// config after the in-app recorder is done capturing keys. Critical: this
+/// must register BOTH bindings, otherwise cancelling the translate-hotkey
+/// recorder would silently drop the translate binding until app restart.
 #[tauri::command]
 async fn resume_hotkey(
     app: tauri::AppHandle,
     config_state: tauri::State<'_, storage::ConfigManager>,
 ) -> Result<(), String> {
     let config = config_state.load().await.map_err(|e| e.to_string())?;
-    let shortcut = parse_hotkey(&config.hotkey).unwrap_or_else(default_shortcut);
-    // Ensure clean state, then register
-    let _ = app.global_shortcut().unregister_all();
-    app.global_shortcut()
-        .register(shortcut)
-        .map_err(|e| e.to_string())
+    reregister_all_hotkeys(&app, &config)
 }
 
 // ─── Hotkey parsing ───
@@ -774,8 +985,103 @@ fn build_shortcut_handler(
        + Send
        + Sync
        + 'static {
-    move |_app, _shortcut, event| {
+    move |_app, shortcut, event| {
         let handle = app_handle.clone();
+
+        // Check whether this press is the translate-toggle hotkey. If so,
+        // flip `translate_enabled` in config and notify the frontend — never
+        // touch the recording pipeline. Translate hotkey reacts to Pressed
+        // only (a toggle, like Caps Lock).
+        //
+        // Compare on (mods, key) — NOT on `Shortcut` equality, because that
+        // compares unique instance IDs which always differ between the cached
+        // copy and the one delivered by the global-hotkey plugin's callback.
+        let is_translate_shortcut = handle
+            .try_state::<TranslateHotkeyCache>()
+            .and_then(|cache| {
+                cache
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|(mods, key)| *mods == shortcut.mods && *key == shortcut.key)
+            })
+            .unwrap_or(false);
+
+        if is_translate_shortcut {
+            if event.state == ShortcutState::Pressed {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let config_state = handle.state::<storage::ConfigManager>();
+                    let mut cfg = match config_state.load().await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Translate toggle: failed to load config: {}", e);
+                            return;
+                        }
+                    };
+                    cfg.translate_enabled = !cfg.translate_enabled;
+                    let new_state = cfg.translate_enabled;
+                    let target_lang = cfg.target_lang.clone();
+                    if let Err(e) = config_state.save(&cfg).await {
+                        tracing::error!("Translate toggle: failed to save config: {}", e);
+                        return;
+                    }
+                    tracing::info!(
+                        "Translate toggled via hotkey: enabled={}, target_lang={}",
+                        new_state,
+                        target_lang
+                    );
+                    // Emit so frontend can show a toast + refresh its mirror of config.
+                    let _ = handle.emit(
+                        "translate:toggled",
+                        serde_json::json!({
+                            "enabled": new_state,
+                            "target_lang": target_lang,
+                        }),
+                    );
+                });
+            }
+            return;
+        }
+
+        // Agent hotkey: start a forced-agent recording (Idle→Recording) or
+        // stop an in-flight one (Recording→Transcribing). Same toggle semantics
+        // as the recording hotkey when hotkey_mode is "toggle", but always uses
+        // `start_for_agent()` so stop() routes through Hermes regardless of
+        // STT trigger-word recognition. Only Pressed matters here.
+        let is_agent_shortcut = handle
+            .try_state::<AgentHotkeyCache>()
+            .and_then(|cache| {
+                cache
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|(mods, key)| *mods == shortcut.mods && *key == shortcut.key)
+            })
+            .unwrap_or(false);
+        if is_agent_shortcut {
+            if event.state == ShortcutState::Pressed {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let pipeline = handle.state::<pipeline::PipelineHandle>();
+                    if pipeline.current_state() == pipeline::PipelineState::Idle {
+                        tracing::info!("Agent hotkey: starting forced-agent recording");
+                        if let Err(e) = pipeline.start_for_agent().await {
+                            tracing::error!("Agent start failed: {}", e);
+                            let _ = handle.emit("pipeline:error", e.to_string());
+                        }
+                    } else if let Err(e) = pipeline.stop().await {
+                        tracing::error!("Agent stop failed: {}", e);
+                        let _ = handle.emit("pipeline:error", e.to_string());
+                    }
+                });
+            }
+            return;
+        }
+
+        // Otherwise this is the recording shortcut — original behavior.
         match event.state {
             ShortcutState::Pressed => {
                 let hotkey_mode = handle
@@ -1086,6 +1392,18 @@ pub fn run() {
             let initial_config =
                 tauri::async_runtime::block_on(config_manager.load()).unwrap_or_default();
             let shortcut = parse_hotkey(&initial_config.hotkey).unwrap_or_else(default_shortcut);
+            let translate_shortcut = if initial_config.translate_hotkey.trim().is_empty() {
+                None
+            } else {
+                parse_hotkey(&initial_config.translate_hotkey)
+            };
+            let translate_signature = translate_shortcut.as_ref().map(|s| (s.mods, s.key));
+            let agent_shortcut = if initial_config.agent_hotkey.trim().is_empty() {
+                None
+            } else {
+                parse_hotkey(&initial_config.agent_hotkey)
+            };
+            let agent_signature = agent_shortcut.as_ref().map(|s| (s.mods, s.key));
 
             app.manage(config_manager);
             app.manage(history_store);
@@ -1097,6 +1415,8 @@ pub fn run() {
             app.manage(CloseToTrayCache(Arc::new(Mutex::new(
                 initial_config.close_to_tray,
             ))));
+            app.manage(TranslateHotkeyCache(Arc::new(Mutex::new(translate_signature))));
+            app.manage(AgentHotkeyCache(Arc::new(Mutex::new(agent_signature))));
             app.manage(SessionTokenStore(Arc::new(Mutex::new(String::new()))));
 
             // Sync auto-start state with system
@@ -1123,6 +1443,22 @@ pub fn run() {
                     "Failed to register shortcut '{}' (may be occupied): {e}",
                     initial_config.hotkey
                 );
+            }
+            if let Some(t) = translate_shortcut {
+                if let Err(e) = app.global_shortcut().register(t) {
+                    tracing::warn!(
+                        "Failed to register translate hotkey '{}' (may be occupied): {e}",
+                        initial_config.translate_hotkey
+                    );
+                }
+            }
+            if let Some(a) = agent_shortcut {
+                if let Err(e) = app.global_shortcut().register(a) {
+                    tracing::warn!(
+                        "Failed to register agent hotkey '{}' (may be occupied): {e}",
+                        initial_config.agent_hotkey
+                    );
+                }
             }
 
             // System tray
@@ -1314,21 +1650,30 @@ pub fn run() {
             start_recording,
             stop_recording,
             abort_recording,
+            test_audio_capture,
             check_accessibility_permission,
             request_accessibility_permission,
             get_config,
             update_config,
             test_stt_connection,
             test_llm_connection,
+            test_agent,
+            test_agent_route,
+            test_hermes_agent,
+            test_hermes_route,
+            get_last_agent_result,
             bench_stt_connection,
             bench_llm_connection,
             fetch_llm_models,
             get_history,
             clear_history,
+            delete_history_entry,
             get_dictionary,
             add_dictionary_entry,
             remove_dictionary_entry,
             update_hotkey,
+            update_translate_hotkey,
+            update_agent_hotkey,
             pause_hotkey,
             resume_hotkey,
             set_auto_start,

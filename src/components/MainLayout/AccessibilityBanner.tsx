@@ -9,12 +9,17 @@ export function AccessibilityBanner() {
   const { t } = useTranslation()
   const accessibilityTrusted = useAppStore((s) => s.accessibilityTrusted)
   const setAccessibilityTrusted = useAppStore((s) => s.setAccessibilityTrusted)
-  const config = useAppStore((s) => s.config)
   const isMac =
     typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
   const [dismissed, setDismissed] = useState(false)
 
-  const show = isMac && !accessibilityTrusted && config.output_mode === 'keyboard' && !dismissed
+  // Accessibility is required for BOTH output modes on macOS:
+  //   - keyboard: enigo CGEventPost → needs Accessibility (well-known)
+  //   - clipboard: osascript `keystroke "v" using command down` → Accessibility too,
+  //                NOT Automation (System Events returns error 1002 without it,
+  //                which is the gotcha that bites every new install).
+  // So we show the banner unconditionally on macOS until the permission is granted.
+  const show = isMac && !accessibilityTrusted && !dismissed
 
   // Re-show banner when accessibility error fires (user just hit the issue)
   useEffect(() => {

@@ -65,6 +65,7 @@ describe('appStore', () => {
           polished_text: 'Hello.',
           language: 'en',
           duration_ms: 1200,
+          agent_response: null,
         },
       ]
       getState().setHistory(entries)

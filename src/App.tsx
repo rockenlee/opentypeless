@@ -16,14 +16,23 @@ import { HomePage } from './components/HomePage'
 import { UpgradePage } from './components/UpgradePage'
 import { AccountPage } from './components/AccountPage'
 import { ToastContainer } from './components/Toast'
+import { AgentResultWindow } from './components/AgentResultWindow'
 
 function CapsuleApp() {
   useTauriEvents()
   useTheme()
 
   const setConfig = useAppStore((s) => s.setConfig)
+  const setPipelineError = useAppStore((s) => s.setPipelineError)
 
   useEffect(() => {
+    // Clear ONLY stale pipelineError on mount — never touch pipelineState
+    // or recording state. An earlier version of this effect reset them too,
+    // which created a race: if `pipeline:state=recording` fired between
+    // capsule webview mount and this effect, we'd clobber it back to idle
+    // and the capsule would stay on the small idle dot forever.
+    setPipelineError(null)
+
     // Load config so DurationTimer gets the correct max_recording_seconds
     getConfig()
       .then((config) => {
@@ -37,7 +46,7 @@ function CapsuleApp() {
       .catch((e) => {
         console.error('Failed to load config in capsule:', e)
       })
-  }, [setConfig])
+  }, [setConfig, setPipelineError])
 
   // Window show is handled by useCapsuleResize (setSize → setPosition → show),
   // which works on both Windows and macOS. The previous rAF-based show approach
@@ -164,9 +173,25 @@ function MainApp() {
   )
 }
 
+// Tauri 2 injects `__TAURI_INTERNALS__.metadata.currentWindow.label` before any user JS runs,
+// so we can identify the window synchronously without relying on hash routing — which proved
+// fragile because navigation in the main window mutates `location.hash`, and because
+// Tauri webview navigation can race the hash being available when React first renders.
+function currentWindowLabel(): string | null {
+  const label = (
+    window as unknown as {
+      __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } }
+    }
+  ).__TAURI_INTERNALS__?.metadata?.currentWindow?.label
+  return label ?? null
+}
+
 function App() {
-  // Capsule window loads with #capsule hash — detect synchronously, no race condition
-  if (window.location.hash === '#capsule') return <CapsuleApp />
+  const label = currentWindowLabel()
+  // Prefer the Tauri window label; fall back to URL hash for non-Tauri contexts (tests).
+  if (label === 'capsule' || window.location.hash === '#capsule') return <CapsuleApp />
+  if (label === 'agent-result' || window.location.hash === '#agent-result')
+    return <AgentResultWindow />
   return <MainApp />
 }
 

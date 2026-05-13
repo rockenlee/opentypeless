@@ -3,6 +3,30 @@ import { listen } from '@tauri-apps/api/event'
 import { useAppStore } from '../stores/appStore'
 import type { PipelineState } from '../stores/appStore'
 import { getHistory } from '../lib/tauri'
+import { toast } from '../components/Toast'
+
+const LANG_LABEL: Record<string, string> = {
+  en: 'English',
+  zh: '中文',
+  ja: '日本語',
+  ko: '한국어',
+  fr: 'Français',
+  de: 'Deutsch',
+  es: 'Español',
+  pt: 'Português',
+  ru: 'Русский',
+  ar: 'العربية',
+  hi: 'हिन्दी',
+  th: 'ไทย',
+  vi: 'Tiếng Việt',
+  it: 'Italiano',
+  nl: 'Nederlands',
+  tr: 'Türkçe',
+  pl: 'Polski',
+  uk: 'Українська',
+  id: 'Bahasa Indonesia',
+  ms: 'Bahasa Melayu',
+}
 
 export function useTauriEvents() {
   const {
@@ -15,6 +39,10 @@ export function useTauriEvents() {
     setPipelineError,
     setAccessibilityTrusted,
     setHistory,
+    setAgentStatus,
+    setAgentResult,
+    resetRecording,
+    updateConfig,
   } = useAppStore()
 
   useEffect(() => {
@@ -39,11 +67,15 @@ export function useTauriEvents() {
     addListener<string>('stt:partial', setPartialTranscript)
     addListener<string>('stt:final', setFinalTranscript)
     addListener<string>('llm:chunk', appendPolishedChunk)
+    addListener<string>('agent:status', setAgentStatus)
     addListener<PipelineState>('pipeline:state', (state) => {
       setPipelineState(state)
       if (state === 'recording') {
-        // Clear any previous error when starting a new pipeline run
+        // Clear any previous error and agent result when starting a new pipeline run
+        resetRecording()
         setPipelineError(null)
+        setAgentStatus('')
+        setAgentResult(null)
       }
       if (state === 'idle') {
         // Don't clear pipelineError here — CapsuleError auto-resets after 2.5s.
@@ -58,11 +90,24 @@ export function useTauriEvents() {
     })
     addListener<string>('pipeline:target_app', setTargetApp)
     addListener<string>('pipeline:error', (error) => {
+      console.error('[pipeline:error]', error)
       setPipelineError(error)
       if (error === 'ACCESSIBILITY_REQUIRED') {
         setAccessibilityTrusted(false)
       }
     })
+
+    // Translate hotkey was pressed (toggle). Backend has already flipped
+    // translate_enabled and persisted it — we just refresh our local mirror
+    // of config and surface a toast so the user knows their press registered.
+    addListener<{ enabled: boolean; target_lang: string }>(
+      'translate:toggled',
+      ({ enabled, target_lang }) => {
+        updateConfig({ translate_enabled: enabled, target_lang })
+        const langLabel = LANG_LABEL[target_lang] ?? target_lang
+        toast(enabled ? `Translate ON → ${langLabel}` : 'Translate OFF', 'info')
+      },
+    )
 
     addListener<void>('tray:settings', () => {
       window.location.hash = '#/settings'
@@ -91,5 +136,9 @@ export function useTauriEvents() {
     setPipelineError,
     setAccessibilityTrusted,
     setHistory,
+    setAgentStatus,
+    setAgentResult,
+    resetRecording,
+    updateConfig,
   ])
 }

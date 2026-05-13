@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +44,7 @@ impl AudioCaptureHandle {
     pub fn start(config: AudioConfig) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(200);
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let volume = Arc::new(Mutex::new(0.0f32));
         let state = Arc::new(Mutex::new(CaptureState::Recording));
 
@@ -51,10 +53,24 @@ impl AudioCaptureHandle {
 
         // Audio capture must run on a dedicated OS thread because cpal::Stream is !Send
         std::thread::spawn(move || {
-            if let Err(e) = run_capture(config, audio_tx, stop_rx, vol_clone, state_clone) {
+            let ready_tx_for_error = ready_tx.clone();
+            if let Err(e) = run_capture(config, audio_tx, stop_rx, vol_clone, state_clone, ready_tx)
+            {
+                let _ = ready_tx_for_error.send(Err(e.to_string()));
                 tracing::error!("Audio capture thread error: {}", e);
             }
         });
+
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => return Err(anyhow!(message)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err(anyhow!("Audio capture did not start within 5 seconds"));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!("Audio capture thread exited before starting"));
+            }
+        }
 
         Ok((
             Self {
@@ -79,6 +95,61 @@ impl AudioCaptureHandle {
 
     pub fn state(&self) -> CaptureState {
         *self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[derive(Clone)]
+struct ProcessContext {
+    device_sample_rate: u32,
+    device_channels: u16,
+    target_rate: u32,
+    target_channels: u16,
+    samples_per_chunk: usize,
+    buffer: Arc<Mutex<Vec<i16>>>,
+    volume: Arc<Mutex<f32>>,
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+fn process_input_samples(samples: &[f32], ctx: &ProcessContext) {
+    if samples.is_empty() {
+        return;
+    }
+
+    // Calculate RMS volume from raw data
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    if let Ok(mut v) = ctx.volume.lock() {
+        *v = rms.min(1.0);
+    }
+
+    // Convert to mono if needed
+    let mono = if ctx.device_channels > ctx.target_channels {
+        to_mono(samples, ctx.device_channels)
+    } else {
+        samples.to_vec()
+    };
+
+    // Downsample to target rate if needed
+    let resampled = if ctx.device_sample_rate != ctx.target_rate {
+        downsample(&mono, ctx.device_sample_rate, ctx.target_rate)
+    } else {
+        mono
+    };
+
+    // Convert f32 to i16 PCM and buffer
+    let mut buf = ctx.buffer.lock().unwrap_or_else(|e| e.into_inner());
+    for &sample in &resampled {
+        if buf.len() >= MAX_BUFFER_SAMPLES {
+            break;
+        }
+        let s = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        buf.push(s);
+    }
+
+    // Send complete chunks
+    while buf.len() >= ctx.samples_per_chunk {
+        let chunk: Vec<i16> = buf.drain(..ctx.samples_per_chunk).collect();
+        let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let _ = ctx.sender.try_send(bytes);
     }
 }
 
@@ -122,6 +193,7 @@ fn run_capture(
     stop_rx: std::sync::mpsc::Receiver<()>,
     volume: Arc<Mutex<f32>>,
     state: Arc<Mutex<CaptureState>>,
+    ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> Result<()> {
     let host = cpal::default_host();
     let device = host
@@ -153,54 +225,73 @@ fn run_capture(
     let samples_per_chunk = (target_rate * config.chunk_duration_ms / 1000) as usize;
     let buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(samples_per_chunk)));
 
-    let stream = device.build_input_stream(
-        &stream_config,
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            // Calculate RMS volume from raw data
-            let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
-            if let Ok(mut v) = volume.lock() {
-                *v = rms.min(1.0);
-            }
+    let ctx = ProcessContext {
+        device_sample_rate,
+        device_channels,
+        target_rate,
+        target_channels,
+        samples_per_chunk,
+        buffer,
+        volume,
+        sender,
+    };
 
-            // Convert to mono if needed
-            let mono = if device_channels > target_channels {
-                to_mono(data, device_channels)
-            } else {
-                data.to_vec()
-            };
-
-            // Downsample to target rate if needed
-            let resampled = if device_sample_rate != target_rate {
-                downsample(&mono, device_sample_rate, target_rate)
-            } else {
-                mono
-            };
-
-            // Convert f32 to i16 PCM and buffer
-            let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
-            for &sample in &resampled {
-                if buf.len() >= MAX_BUFFER_SAMPLES {
-                    break;
-                }
-                let s = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                buf.push(s);
-            }
-
-            // Send complete chunks
-            while buf.len() >= samples_per_chunk {
-                let chunk: Vec<i16> = buf.drain(..samples_per_chunk).collect();
-                let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
-                let _ = sender.try_send(bytes);
-            }
-        },
-        |err| {
-            tracing::error!("Audio capture error: {}", err);
-        },
-        None,
-    )?;
+    let stream = match default_config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let ctx = ctx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    process_input_samples(data, &ctx);
+                },
+                |err| {
+                    tracing::error!("Audio capture error: {}", err);
+                },
+                None,
+            )?
+        }
+        cpal::SampleFormat::I16 => {
+            let ctx = ctx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let samples: Vec<f32> =
+                        data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
+                    process_input_samples(&samples, &ctx);
+                },
+                |err| {
+                    tracing::error!("Audio capture error: {}", err);
+                },
+                None,
+            )?
+        }
+        cpal::SampleFormat::U16 => {
+            let ctx = ctx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    let samples: Vec<f32> = data
+                        .iter()
+                        .map(|s| (*s as f32 - 32768.0) / 32768.0)
+                        .collect();
+                    process_input_samples(&samples, &ctx);
+                },
+                |err| {
+                    tracing::error!("Audio capture error: {}", err);
+                },
+                None,
+            )?
+        }
+        sample_format => {
+            return Err(anyhow!(
+                "Unsupported input sample format: {sample_format:?}"
+            ));
+        }
+    };
 
     stream.play()?;
     *state.lock().unwrap_or_else(|e| e.into_inner()) = CaptureState::Recording;
+    let _ = ready_tx.send(Ok(()));
     tracing::info!(
         "Audio capture started (device: {}Hz {}ch -> target: {}Hz {}ch)",
         device_sample_rate,

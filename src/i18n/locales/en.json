@@ -30,6 +30,17 @@
     "disabled": "Disabled",
     "outputMode": "Output Mode"
   },
+  "pipeline": {
+    "idle": "Idle",
+    "recording": "Recording",
+    "transcribing": "Transcribing",
+    "polishing": "Processing",
+    "outputting": "Outputting",
+    "speakNow": "Listening to your voice",
+    "waitingForTranscript": "Waiting for speech recognition...",
+    "polishingDetail": "Preparing the transcript...",
+    "outputtingDetail": "Writing the result..."
+  },
   "onboarding": {
     "welcomeTitle": "Welcome to OpenTypeless",
     "welcomeSubtitle": "A few quick steps to get started with voice input",
@@ -96,6 +107,7 @@
     "general": "General",
     "speechRecognition": "Speech Recognition",
     "aiPolish": "AI Polish",
+    "agent": "Agent",
     "dictionary": "Dictionary",
     "scenes": "Scenes",
     "about": "About",
@@ -104,6 +116,18 @@
     "clickToConfirm": "Click again to confirm, or press another combination",
     "holdToTalk": "Hold to Talk",
     "toggleOnOff": "Toggle On/Off",
+    "notSet": "Not set",
+    "translateHotkey": "Translate Mode Hotkey",
+    "translateHotkeyDesc": "Press this hotkey anytime to toggle translation on/off. A toast confirms the new state.",
+    "translateOn": "Translate mode is currently ON",
+    "translateOff": "Translate mode is currently OFF",
+    "agentHotkey": "Agent Hotkey",
+    "agentHotkeyDesc": "Press to start a forced Hermes-agent recording — the whole transcript becomes the prompt (no \"hermes\" / \"agent\" trigger word required). Result is shown in the agent panel.",
+    "recordingBehavior": "Recording Behavior",
+    "autoPauseMedia": "Pause local media on record start",
+    "autoPauseMediaHint": "Pauses Music / Spotify / Podcasts / QuickTime / VLC / IINA when recording begins so the audio doesn't bleed into the mic. Apps without AppleScript support (e.g. QQ Music, browser tabs) are not affected.",
+    "agentNotification": "Notify when Agent finishes",
+    "agentNotificationHint": "Shows a native macOS notification with the start of the response — useful when the agent panel surfaces behind your active app.",
     "outputMode": "Output Mode",
     "keyboardSimulation": "Keyboard Simulation",
     "clipboardPaste": "Clipboard Paste",
@@ -147,10 +171,30 @@
     "view": "View",
     "maxRecordingDuration": "Max Recording Duration",
     "hideCapsuleWhenIdle": "Hide capsule when idle",
+    "agentRuntime": "Agent Runtime",
+    "enableAgent": "Enable agent routing",
+    "enableHermesAgent": "Enable agent routing",
+    "agentPreset": "Agent",
+    "agentCommand": "Command (override)",
+    "agentCommandHint": "Leave empty to auto-discover from the preset. Set an absolute path if the binary is not in a standard location.",
+    "agentArgs": "Args template",
+    "agentArgsHint": "Use literal {prompt} as placeholder for the prompt text. Empty = use preset default.",
+    "hermesCommand": "Command (override)",
+    "hermesWorkingDirectory": "Working Directory",
+    "hermesCwdPlaceholder": "Leave empty to use the app current directory",
+    "agentRouting": "Routing",
+    "agentRoutingDesc": "When a transcript starts with one of these phrases, OpenTypeless sends the command to the configured agent instead of the normal AI polish path. The agent hotkey bypasses this entirely.",
+    "currentHermesRequest": "Resolved command",
+    "testHermes": "Test agent",
+    "runHermesTest": "Run test",
+    "testHermesRoute": "Test routing",
+    "runHermesRouteTest": "Run route test",
+    "microphoneCapture": "Microphone Capture",
+    "testMicrophone": "Test Microphone",
     "accessibilityPermission": "macOS Accessibility",
     "accessibilityGranted": "Permission granted",
-    "accessibilityRequired": "Required for keyboard output",
-    "grantPermission": "Grant Permission"
+    "accessibilityRequired": "Required to auto-paste transcribed text — System Settings → Privacy & Security → Accessibility → enable OpenTypeless. (Not Automation.)",
+    "grantPermission": "Open Accessibility Settings"
   },
   "dictionary": {
     "word": "Word",
@@ -190,7 +234,9 @@
     "clearAll": "Clear All History",
     "clearConfirm": "Are you sure you want to clear all history? This cannot be undone.",
     "failedToCopy": "Failed to copy to clipboard",
-    "failedToClear": "Failed to clear history"
+    "failedToClear": "Failed to clear history",
+    "detail": "Detail",
+    "viewAgentDetail": "View Agent response"
   },
   "upgrade": {
     "title": "Upgrade to Pro",
@@ -236,5 +282,11 @@
     "somethingWentWrong": "Something went wrong",
     "unexpectedError": "An unexpected error occurred.",
     "reload": "Reload"
+  },
+  "agent": {
+    "resultTitle": "Agent Response",
+    "copyResult": "Copy response",
+    "closePanel": "Close",
+    "waitingForResult": "Waiting for Agent response..."
   }
 }

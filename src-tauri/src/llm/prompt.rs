@@ -110,14 +110,19 @@ pub fn build_system_prompt(
                 }
             }
         };
+        // The base prompt's rule 5 says "preserve the user's language" — when translation
+        // is enabled this conflicts with the translate-to-target-language instruction below.
+        // Small models (e.g. qwen-7b) tend to follow the numbered hard rule and ignore the
+        // trailing addon, leaving the output in the original language. We explicitly
+        // OVERRIDE rule 5 here so the two ends of the prompt agree.
         if has_selected_text {
             prompt.push_str(&format!(
-                "\n\nAFTER applying the user's instruction to the selected text, translate the final result into {}. Output ONLY the translated text.",
+                "\n\nOVERRIDE: Rule 5 (\"Preserve the user's language\") and the \"do not add content\" clause are SUSPENDED for this request. After applying the user's instruction to the selected text, you MUST translate the final result into {0}. Output ONLY the translated text in {0}, with no original-language version, no transliteration, no explanation.",
                 lang_name
             ));
         } else {
             prompt.push_str(&format!(
-                "\n\nAFTER cleaning the text, translate the entire result into {}. Output ONLY the translated text.",
+                "\n\nOVERRIDE: Rule 5 (\"Preserve the user's language\") and the \"do not add content\" clause are SUSPENDED for this request. After cleaning the transcription, you MUST translate the entire result into {0}. Output ONLY the translated text in {0}, with no original-language version, no transliteration, no explanation.",
                 lang_name
             ));
         }
@@ -134,32 +139,33 @@ mod tests {
     fn test_build_prompt_without_translation() {
         let prompt = build_system_prompt(AppType::General, &[], false, "", false);
         assert!(prompt.contains("voice-to-text assistant"));
-        assert!(!prompt.contains("AFTER cleaning"));
+        assert!(!prompt.contains("OVERRIDE: Rule 5"));
     }
 
     #[test]
     fn test_build_prompt_with_translation_disabled() {
         let prompt = build_system_prompt(AppType::General, &[], false, "ja", false);
         assert!(!prompt.contains("translate the entire result into Japanese"));
-        assert!(!prompt.contains("AFTER cleaning"));
+        assert!(!prompt.contains("OVERRIDE: Rule 5"));
     }
 
     #[test]
     fn test_build_prompt_with_translation_enabled() {
         let prompt = build_system_prompt(AppType::General, &[], true, "ja", false);
         assert!(prompt.contains("translate the entire result into Japanese"));
+        assert!(prompt.contains("OVERRIDE: Rule 5"));
     }
 
     #[test]
     fn test_build_prompt_with_empty_target_lang() {
         let prompt = build_system_prompt(AppType::General, &[], true, "", false);
-        assert!(!prompt.contains("AFTER cleaning"));
+        assert!(!prompt.contains("OVERRIDE: Rule 5"));
     }
 
     #[test]
     fn test_build_prompt_with_whitespace_target_lang() {
         let prompt = build_system_prompt(AppType::General, &[], true, "   ", false);
-        assert!(!prompt.contains("AFTER cleaning"));
+        assert!(!prompt.contains("OVERRIDE: Rule 5"));
     }
 
     #[test]
@@ -297,7 +303,7 @@ mod tests {
         assert!(prompt.contains("English"));
         // Selected text addon should come BEFORE translation
         let sel_pos = prompt.find("SELECTED TEXT MODE").unwrap();
-        let trans_pos = prompt.find("AFTER applying").unwrap();
+        let trans_pos = prompt.find("OVERRIDE: Rule 5").unwrap();
         assert!(
             sel_pos < trans_pos,
             "SELECTED TEXT MODE should appear before translation instruction"
@@ -307,7 +313,7 @@ mod tests {
     #[test]
     fn test_prompt_no_selected_text_translation_wording() {
         let prompt = build_system_prompt(AppType::General, &[], true, "zh", false);
-        assert!(prompt.contains("AFTER cleaning the text"));
+        assert!(prompt.contains("After cleaning the transcription"));
         assert!(!prompt.contains("applying the user's instruction"));
     }
 
@@ -376,6 +382,6 @@ mod tests {
     fn test_unknown_lang_pure_symbols_rejected() {
         // Pure symbols should cause translation to be skipped entirely
         let prompt = build_system_prompt(AppType::General, &[], true, "123.456", false);
-        assert!(!prompt.contains("AFTER cleaning"));
+        assert!(!prompt.contains("OVERRIDE: Rule 5"));
     }
 }

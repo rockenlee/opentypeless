@@ -25,14 +25,14 @@ export function CapsuleError() {
 
   return (
     <motion.div
-      className="relative z-10 flex items-center gap-2 h-9 px-3"
+      className="relative z-10 flex items-start gap-2 min-h-9 px-3 py-1"
       initial={{ opacity: 0, x: -4 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
     >
       {/* White dot */}
       <motion.div className="w-2 h-2 rounded-full bg-white/80 flex-shrink-0" />
-      <p className="text-[11px] text-white truncate flex-1">
+      <p className="text-[11px] text-white break-all flex-1 whitespace-pre-wrap">
         {pipelineError === 'ACCESSIBILITY_REQUIRED'
           ? t('capsule.accessibilityRequired')
           : pipelineError || 'An error occurred'}

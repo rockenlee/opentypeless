@@ -14,6 +14,17 @@ export async function abortRecording(): Promise<void> {
   return invoke('abort_recording')
 }
 
+export interface AudioCaptureTestResult {
+  duration_ms: number
+  chunks: number
+  bytes: number
+  max_volume: number
+}
+
+export async function testAudioCapture(): Promise<AudioCaptureTestResult> {
+  return invoke('test_audio_capture')
+}
+
 // Config commands
 export async function getConfig(): Promise<AppConfig> {
   return invoke('get_config')
@@ -35,6 +46,18 @@ export async function testLlmConnection(
   model: string,
 ): Promise<boolean> {
   return invoke('test_llm_connection', { apiKey, provider, baseUrl, model })
+}
+
+export async function testHermesAgent(config: AppConfig): Promise<string> {
+  return invoke('test_hermes_agent', { config })
+}
+
+export async function testHermesRoute(config: AppConfig, text: string): Promise<string> {
+  return invoke('test_hermes_route', { config, text })
+}
+
+export async function getLastAgentResult(): Promise<string | null> {
+  return invoke('get_last_agent_result')
 }
 
 // Latency benchmark — returns round-trip time in milliseconds
@@ -61,6 +84,14 @@ export async function updateHotkey(hotkey: string): Promise<void> {
   return invoke('update_hotkey', { hotkey })
 }
 
+export async function updateTranslateHotkey(hotkey: string): Promise<void> {
+  return invoke('update_translate_hotkey', { hotkey })
+}
+
+export async function updateAgentHotkey(hotkey: string): Promise<void> {
+  return invoke('update_agent_hotkey', { hotkey })
+}
+
 export async function pauseHotkey(): Promise<void> {
   return invoke('pause_hotkey')
 }
@@ -76,6 +107,10 @@ export async function getHistory(limit: number, offset: number): Promise<History
 
 export async function clearHistory(): Promise<void> {
   return invoke('clear_history')
+}
+
+export async function deleteHistoryEntry(id: number): Promise<void> {
+  return invoke('delete_history_entry', { id })
 }
 
 // Dictionary

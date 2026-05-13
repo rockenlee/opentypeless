@@ -16,9 +16,9 @@ pub trait TextOutput: Send + Sync {
     fn mode(&self) -> OutputMode;
 }
 
-pub fn create_output(mode: OutputMode) -> Box<dyn TextOutput> {
+pub fn create_output(mode: OutputMode, app_name: &str) -> Box<dyn TextOutput> {
     match mode {
         OutputMode::Keyboard => Box::new(keyboard::KeyboardOutput::new()),
-        OutputMode::Clipboard => Box::new(clipboard::ClipboardOutput::new()),
+        OutputMode::Clipboard => Box::new(clipboard::ClipboardOutput::new(app_name)),
     }
 }

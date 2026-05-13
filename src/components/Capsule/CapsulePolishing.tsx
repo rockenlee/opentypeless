@@ -1,9 +1,11 @@
 import { motion, useReducedMotion } from 'framer-motion'
 import { X } from 'lucide-react'
 import { abortRecording } from '../../lib/tauri'
+import { useAppStore } from '../../stores/appStore'
 
 export function CapsulePolishing() {
   const reduced = useReducedMotion()
+  const agentStatus = useAppStore((s) => s.agentStatus)
 
   const handleCancel = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -32,7 +34,9 @@ export function CapsulePolishing() {
           />
         ))}
       </div>
-      <p className="text-[11px] text-white leading-snug truncate flex-1 min-w-0">Thinking...</p>
+      <p className="text-[11px] text-white leading-snug truncate flex-1 min-w-0">
+        {agentStatus || 'Thinking...'}
+      </p>
       <button
         onClick={handleCancel}
         aria-label="Cancel polishing"

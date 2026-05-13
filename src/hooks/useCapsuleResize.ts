@@ -115,7 +115,18 @@ export function useCapsuleResize() {
             const oldLeftX = pos.x / scale
             const oldCenterY = pos.y / scale + prev.height / 2
             const newX = Math.round(oldLeftX)
-            const newY = Math.round(oldCenterY - windowHeight / 2)
+            let newY = Math.round(oldCenterY - windowHeight / 2)
+            // Clamp Y so the capsule is never hidden behind the Dock or pushed
+            // off-screen. macOS Dock is typically ~80px tall when shown; we
+            // keep an extra 16px safety margin. Without this, accidental
+            // dragging eventually parks the capsule below the visible area.
+            if (monitor) {
+              const screenH = monitor.size.height / monitor.scaleFactor
+              const maxY = screenH - windowHeight - 96 // 80 Dock + 16 margin
+              const minY = 28 // 24 menu bar + 4 margin
+              if (newY > maxY) newY = maxY
+              if (newY < minY) newY = minY
+            }
             await win.setPosition(new LogicalPosition(newX, newY)).catch(() => {})
             await win.setSize(new LogicalSize(windowWidth, windowHeight)).catch(() => {})
           } else {
@@ -132,7 +143,11 @@ export function useCapsuleResize() {
           setContextMenuReady(true)
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        // Capsule failed to size/show — surface this in the console so the user can debug
+        // instead of getting a silently-hidden capsule window.
+        console.error('useCapsuleResize failed:', err)
+      })
   }, [
     pipelineState,
     capsuleExpanded,

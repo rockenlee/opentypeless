@@ -2,9 +2,42 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../../stores/appStore'
 import type { HotkeyMode, OutputMode } from '../../stores/appStore'
-import { updateHotkey, pauseHotkey, resumeHotkey, checkAccessibilityPermission, requestAccessibilityPermission } from '../../lib/tauri'
+import { updateHotkey, updateTranslateHotkey, updateAgentHotkey, pauseHotkey, resumeHotkey, checkAccessibilityPermission, requestAccessibilityPermission } from '../../lib/tauri'
+import { TARGET_LANGUAGES } from '../../lib/constants'
+import { toast } from '../Toast'
 import { SegmentedControl } from './shared/SegmentedControl'
 import { Toggle } from './shared/Toggle'
+import { FormField } from './shared/FormField'
+
+// Map W3C KeyboardEvent.code (physical key, unaffected by Shift / Option /
+// language layout / IME) to the canonical key name that the Rust `parse_hotkey`
+// understands. Using `e.code` is the only way to reliably identify the key:
+// `e.key` returns the typed character, which on macOS gets mangled by Option
+// (e.g. Option+/ → "÷", Option+. → "≥") and by Shift (Shift+. → ">").
+const CODE_TO_NAME: Record<string, string> = {
+  // Letters
+  KeyA: 'A', KeyB: 'B', KeyC: 'C', KeyD: 'D', KeyE: 'E', KeyF: 'F', KeyG: 'G',
+  KeyH: 'H', KeyI: 'I', KeyJ: 'J', KeyK: 'K', KeyL: 'L', KeyM: 'M', KeyN: 'N',
+  KeyO: 'O', KeyP: 'P', KeyQ: 'Q', KeyR: 'R', KeyS: 'S', KeyT: 'T', KeyU: 'U',
+  KeyV: 'V', KeyW: 'W', KeyX: 'X', KeyY: 'Y', KeyZ: 'Z',
+  // Digits (top row)
+  Digit0: '0', Digit1: '1', Digit2: '2', Digit3: '3', Digit4: '4',
+  Digit5: '5', Digit6: '6', Digit7: '7', Digit8: '8', Digit9: '9',
+  // Symbols
+  Period: '.', Comma: ',', Slash: '/', Backslash: '\\',
+  Semicolon: ';', Quote: "'", Backquote: '`',
+  Minus: '-', Equal: '=',
+  BracketLeft: '[', BracketRight: ']',
+  // Navigation / function
+  Space: 'Space', Tab: 'Tab', Enter: 'Enter', Backspace: 'Backspace',
+  Escape: 'Escape', Delete: 'Delete', Insert: 'Insert',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+  F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+  F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+  // macOS Return key sometimes reports as NumpadEnter
+  NumpadEnter: 'Enter',
+}
 
 // Keys that can be used as hotkeys without a modifier
 const STANDALONE_KEYS = new Set([
@@ -37,7 +70,9 @@ const STANDALONE_KEYS = new Set([
   'F12',
 ])
 
-function HotkeyRecorder() {
+type HotkeyKind = 'recording' | 'translate' | 'agent'
+
+function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
   const config = useAppStore((s) => s.config)
   const updateConfig = useAppStore((s) => s.updateConfig)
   const { t } = useTranslation()
@@ -47,23 +82,49 @@ function HotkeyRecorder() {
   const [error, setError] = useState<string | null>(null)
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const currentValue =
+    kind === 'translate'
+      ? config.translate_hotkey
+      : kind === 'agent'
+        ? config.agent_hotkey
+        : config.hotkey
+  const placeholder = currentValue || t('settings.notSet')
+
   const confirmHotkey = useCallback(
     (hotkey: string) => {
       setRecording(false)
       setError(null)
       setModifierHint(null)
-      updateHotkey(hotkey)
+      const persist =
+        kind === 'translate'
+          ? updateTranslateHotkey
+          : kind === 'agent'
+            ? updateAgentHotkey
+            : updateHotkey
+      persist(hotkey)
         .then(() => {
-          updateConfig({ hotkey })
+          updateConfig(
+            kind === 'translate'
+              ? { translate_hotkey: hotkey }
+              : kind === 'agent'
+                ? { agent_hotkey: hotkey }
+                : { hotkey },
+          )
           setPending(null)
+          toast(`Hotkey saved: ${hotkey}`, 'success')
         })
         .catch((e) => {
-          setError(String(e))
+          // Surface the actual backend error (e.g. "Invalid hotkey: Alt+Shift+>")
+          // both inline AND as a toast — previously errors were only set on local
+          // state, so the user only saw a tiny red line and easily missed it.
+          const msg = String(e)
+          setError(msg)
           setPending(null)
+          toast(msg, 'error')
           resumeHotkey().catch(() => {})
         })
     },
-    [updateConfig],
+    [updateConfig, kind],
   )
 
   const handleKeyDown = useCallback(
@@ -79,33 +140,29 @@ function HotkeyRecorder() {
       if (e.metaKey) parts.push('Meta')
 
       // If only modifier keys are pressed, show hint like "Alt+..."
-      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+      // Modifier-key codes are stable across layouts and modifier state.
+      const MODIFIER_CODES = new Set([
+        'ControlLeft', 'ControlRight',
+        'ShiftLeft', 'ShiftRight',
+        'AltLeft', 'AltRight',
+        'MetaLeft', 'MetaRight',
+      ])
+      if (MODIFIER_CODES.has(e.code)) {
         setModifierHint(parts.length > 0 ? parts.join('+') + '+...' : null)
         return
       }
 
       setModifierHint(null)
 
-      const keyMap: Record<string, string> = {
-        ' ': 'Space',
-        Tab: 'Tab',
-        Enter: 'Enter',
-        Backspace: 'Backspace',
-        Escape: 'Escape',
-        Delete: 'Delete',
-        Insert: 'Insert',
-        Home: 'Home',
-        End: 'End',
-        PageUp: 'PageUp',
-        PageDown: 'PageDown',
-        ArrowUp: 'Up',
-        ArrowDown: 'Down',
-        ArrowLeft: 'Left',
-        ArrowRight: 'Right',
+      // Use `e.code` (physical key position), NOT `e.key` (typed character).
+      // On macOS, Option+/ produces "÷" in `e.key` and Shift+. produces ">".
+      // The Rust parser keys off the unshifted symbol, so we'd need to undo
+      // every modifier's text mangling. Physical code is unambiguous.
+      const keyName = CODE_TO_NAME[e.code]
+      if (!keyName) {
+        // Unknown physical key (e.g. media keys, IntlBackslash). Don't accept.
+        return
       }
-
-      let keyName = keyMap[e.key] || e.key
-      if (keyName.length === 1) keyName = keyName.toUpperCase()
 
       // Letters and digits require at least one modifier to avoid interfering with typing
       if (parts.length === 0 && !STANDALONE_KEYS.has(keyName)) return
@@ -169,7 +226,7 @@ function HotkeyRecorder() {
             : 'bg-bg-secondary border-transparent text-text-primary hover:border-border'
         }`}
       >
-        {recording ? pending || modifierHint || t('settings.pressKeyCombination') : config.hotkey}
+        {recording ? pending || modifierHint || t('settings.pressKeyCombination') : placeholder}
       </button>
       {recording && pending && (
         <p className="text-[11px] text-text-tertiary mt-1.5">{t('settings.clickToConfirm')}</p>
@@ -214,6 +271,66 @@ export function GeneralPane() {
             value={config.hotkey_mode}
             onChange={(v) => updateConfig({ hotkey_mode: v as HotkeyMode })}
           />
+        </div>
+      </Section>
+
+      <Section title={t('settings.translateHotkey')}>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          {t('settings.translateHotkeyDesc')}
+        </p>
+        <HotkeyRecorder kind="translate" />
+        <div className="mt-3">
+          <FormField label={t('settings.targetLanguage')}>
+            <select
+              value={config.target_lang}
+              onChange={(e) => updateConfig({ target_lang: e.target.value })}
+              className="w-full px-3 py-2.5 bg-bg-secondary border border-border rounded-[10px] text-[13px] text-text-primary outline-none focus:border-border-focus transition-colors"
+            >
+              {TARGET_LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </FormField>
+        </div>
+        <div className="mt-2 flex items-center gap-2">
+          <span
+            className={`w-2 h-2 rounded-full ${config.translate_enabled ? 'bg-green-500' : 'bg-text-tertiary'}`}
+          />
+          <span className="text-[11px] text-text-tertiary">
+            {config.translate_enabled
+              ? t('settings.translateOn')
+              : t('settings.translateOff')}
+          </span>
+        </div>
+      </Section>
+
+      <Section title={t('settings.agentHotkey')}>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          {t('settings.agentHotkeyDesc')}
+        </p>
+        <HotkeyRecorder kind="agent" />
+      </Section>
+
+      <Section title={t('settings.recordingBehavior')}>
+        <div className="space-y-3">
+          <Toggle
+            checked={config.auto_pause_media}
+            onChange={(checked) => updateConfig({ auto_pause_media: checked })}
+            label={t('settings.autoPauseMedia')}
+          />
+          <p className="text-[11px] text-text-tertiary -mt-1.5 ml-[52px]">
+            {t('settings.autoPauseMediaHint')}
+          </p>
+          <Toggle
+            checked={config.agent_notification}
+            onChange={(checked) => updateConfig({ agent_notification: checked })}
+            label={t('settings.agentNotification')}
+          />
+          <p className="text-[11px] text-text-tertiary -mt-1.5 ml-[52px]">
+            {t('settings.agentNotificationHint')}
+          </p>
         </div>
       </Section>
 

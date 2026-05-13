@@ -5,6 +5,7 @@ import { spring } from '../../lib/animations'
 import { useRoute, type Route } from '../../lib/router'
 import { useAuthStore } from '../../stores/authStore'
 import { AccessibilityBanner } from './AccessibilityBanner'
+import { AgentResultPanel } from '../AgentResultPanel'
 
 const baseNavItems: { id: Route; labelKey: string; icon: typeof Home }[] = [
   { id: 'home', labelKey: 'nav.home', icon: Home },
@@ -142,6 +143,9 @@ export function MainLayout({ children }: Props) {
         <AccessibilityBanner />
         <div className="flex-1 overflow-y-auto">{children}</div>
       </main>
+
+      {/* Agent result panel — rendered over the whole layout */}
+      <AgentResultPanel />
     </div>
   )
 }

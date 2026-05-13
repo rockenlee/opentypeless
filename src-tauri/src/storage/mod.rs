@@ -29,6 +29,80 @@ pub struct AppConfig {
     pub max_recording_seconds: u32,
     pub ui_language: String,
     pub capsule_auto_hide: bool,
+    // --- Agent integration ---
+    // Generic local-CLI agent invocation. User picks a preset (hermes / claude
+    // / gemini / custom); each preset has a default binary name + args
+    // template with `{prompt}` placeholder. User can override any field
+    // individually. Old `hermes_*` fields are kept as serde aliases for
+    // backward compatibility with existing settings.json files.
+    #[serde(alias = "hermes_agent_enabled", default = "default_true")]
+    pub agent_enabled: bool,
+    #[serde(default = "default_agent_preset")]
+    pub agent_preset: String,
+    #[serde(alias = "hermes_command", default)]
+    pub agent_command: String,
+    /// CLI args template. `{prompt}` is replaced with the actual prompt text.
+    /// Empty string means "use preset's default args".
+    #[serde(default)]
+    pub agent_args: String,
+    #[serde(alias = "hermes_cwd", default)]
+    pub agent_cwd: String,
+
+    /// Hotkey that toggles `translate_enabled` on/off. Pressed once → flips the
+    /// translate flag and shows a toast. Empty string disables the binding.
+    #[serde(default = "default_translate_hotkey")]
+    pub translate_hotkey: String,
+    /// Hotkey that starts/stops a forced agent recording. The whole transcript
+    /// is sent to the configured agent (no trigger-word prefix required) and
+    /// the result is shown in the agent-result panel. Empty disables.
+    #[serde(default = "default_agent_hotkey")]
+    pub agent_hotkey: String,
+
+    /// On record start, attempt to pause locally-playing audio (Music,
+    /// Spotify, Podcasts, QuickTime, VLC, IINA, QQ Music) so it doesn't
+    /// bleed into the microphone. No auto-resume on stop.
+    #[serde(default = "default_true")]
+    pub auto_pause_media: bool,
+
+    /// When an Agent run completes (success or failure), show a native macOS
+    /// notification with the first chunk of the result — so the user notices
+    /// even if they're focused on another app.
+    #[serde(default = "default_true")]
+    pub agent_notification: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_agent_preset() -> String {
+    "hermes".to_string()
+}
+
+fn default_translate_hotkey() -> String {
+    // User-typed "Option+>" on macOS — > is Shift+. (period), so this is
+    // Alt+Shift+Period. The parser accepts `period`/`.` for the key.
+    #[cfg(target_os = "macos")]
+    {
+        "Alt+Shift+.".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Ctrl+Shift+.".to_string()
+    }
+}
+
+fn default_agent_hotkey() -> String {
+    // Mnemonic: "?" = ask the agent a question. On macOS that's Option+?
+    // (Shift+/) → Alt+Shift+Slash. Tauri parser accepts `slash`/`/`.
+    #[cfg(target_os = "macos")]
+    {
+        "Alt+Shift+/".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Ctrl+Shift+/".to_string()
+    }
 }
 
 impl Default for AppConfig {
@@ -58,6 +132,15 @@ impl Default for AppConfig {
             max_recording_seconds: 30,
             ui_language: "en".to_string(),
             capsule_auto_hide: false,
+            agent_enabled: true,
+            agent_preset: default_agent_preset(),
+            agent_command: String::new(),
+            agent_args: String::new(),
+            agent_cwd: String::new(),
+            translate_hotkey: default_translate_hotkey(),
+            agent_hotkey: default_agent_hotkey(),
+            auto_pause_media: true,
+            agent_notification: true,
         }
     }
 }
@@ -124,6 +207,7 @@ pub struct HistoryEntry {
     pub polished_text: String,
     pub language: Option<String>,
     pub duration_ms: Option<i64>,
+    pub agent_response: Option<String>,
 }
 
 pub struct HistoryStore {
@@ -146,6 +230,8 @@ impl HistoryStore {
                 duration_ms INTEGER
             );",
         )?;
+        // Migration: add agent_response column if it doesn't exist yet
+        let _ = conn.execute_batch("ALTER TABLE history ADD COLUMN agent_response TEXT;");
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -154,8 +240,8 @@ impl HistoryStore {
     pub async fn add(&self, entry: HistoryEntry) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO history (created_at, app_name, app_type, raw_text, polished_text, language, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO history (created_at, app_name, app_type, raw_text, polished_text, language, duration_ms, agent_response)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 entry.created_at,
                 entry.app_name,
@@ -164,6 +250,7 @@ impl HistoryStore {
                 entry.polished_text,
                 entry.language,
                 entry.duration_ms,
+                entry.agent_response,
             ],
         )?;
 
@@ -179,7 +266,7 @@ impl HistoryStore {
     pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<HistoryEntry>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT id, created_at, app_name, app_type, raw_text, polished_text, language, duration_ms
+            "SELECT id, created_at, app_name, app_type, raw_text, polished_text, language, duration_ms, agent_response
              FROM history ORDER BY id DESC LIMIT ?1 OFFSET ?2"
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
@@ -192,6 +279,7 @@ impl HistoryStore {
                 polished_text: row.get(5)?,
                 language: row.get(6)?,
                 duration_ms: row.get(7)?,
+                agent_response: row.get(8)?,
             })
         })?;
         let mut entries = Vec::new();
@@ -204,6 +292,12 @@ impl HistoryStore {
     pub async fn clear(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM history", [])?;
+        Ok(())
+    }
+
+    pub async fn remove(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM history WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
 }

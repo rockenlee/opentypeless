@@ -2,9 +2,10 @@ import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../../stores/appStore'
 import { useAuthStore } from '../../stores/authStore'
 import { STT_PROVIDERS, LANGUAGES } from '../../lib/constants'
-import { benchSttConnection } from '../../lib/tauri'
+import { benchSttConnection, testAudioCapture } from '../../lib/tauri'
 import { FormField } from './shared/FormField'
 import { CheckCircle2, XCircle, Loader2, Crown } from 'lucide-react'
+import { useState } from 'react'
 
 export function SttPane() {
   const config = useAppStore((s) => s.config)
@@ -15,6 +16,8 @@ export function SttPane() {
   const setSttLatencyMs = useAppStore((s) => s.setSttLatencyMs)
   const { user, plan } = useAuthStore()
   const { t } = useTranslation()
+  const [audioStatus, setAudioStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
+  const [audioMessage, setAudioMessage] = useState('')
 
   const isCloud = config.stt_provider === 'cloud'
 
@@ -29,6 +32,22 @@ export function SttPane() {
     } catch (err) {
       console.error('[STT Test] Error:', err)
       setSttTestStatus('error')
+    }
+  }
+
+  const handleAudioTest = async () => {
+    setAudioStatus('testing')
+    setAudioMessage('')
+    try {
+      const result = await testAudioCapture()
+      const pct = Math.round(result.max_volume * 100)
+      setAudioMessage(
+        `${result.chunks} chunks, ${Math.round(result.bytes / 1024)} KB, peak ${pct}%`,
+      )
+      setAudioStatus(result.chunks > 0 ? 'success' : 'error')
+    } catch (err) {
+      setAudioMessage(err instanceof Error ? err.message : String(err))
+      setAudioStatus('error')
     }
   }
 
@@ -103,6 +122,27 @@ export function SttPane() {
           <p className="text-[11px] text-text-tertiary mt-1.5">{t('settings.storedLocally')}</p>
         </FormField>
       )}
+
+      <FormField label={t('settings.microphoneCapture')}>
+        <button
+          onClick={handleAudioTest}
+          disabled={audioStatus === 'testing'}
+          className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-accent text-white rounded-[10px] text-[13px] border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {audioStatus === 'testing' && <Loader2 size={14} className="animate-spin" />}
+          {t('settings.testMicrophone')}
+        </button>
+        {audioStatus === 'success' && (
+          <p className="flex items-center gap-1 text-[12px] text-success mt-2">
+            <CheckCircle2 size={13} /> {audioMessage}
+          </p>
+        )}
+        {audioStatus === 'error' && (
+          <p className="flex items-center gap-1 text-[12px] text-error mt-2">
+            <XCircle size={13} /> {audioMessage || t('settings.connectionFailed')}
+          </p>
+        )}
+      </FormField>
 
       <FormField label={t('settings.sttLanguage')}>
         <select

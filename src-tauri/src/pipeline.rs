@@ -1,11 +1,15 @@
 use anyhow::Result;
+#[cfg(not(target_os = "macos"))]
 use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 use tauri::Manager;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Notify;
 
+use crate::agent::{self, AgentRequest};
 use crate::app_detector;
 use crate::audio::{AudioCaptureHandle, AudioConfig};
 use crate::llm::{self, LlmConfig, PolishRequest};
@@ -35,63 +39,25 @@ pub fn is_accessibility_trusted() -> bool {
     }
 }
 
-/// On macOS, request Accessibility permission by showing the system authorization dialog.
-/// Uses AXIsProcessTrustedWithOptions with kAXTrustedCheckOptionPrompt = true.
-/// Returns true if permission is already granted or on non-macOS platforms.
+/// Request Accessibility permission. On macOS, if not already trusted, opens the
+/// Privacy & Security → Accessibility settings pane so the user can grant it. The
+/// previous implementation called `AXIsProcessTrustedWithOptions` via raw FFI to
+/// pop the system prompt, but constructing the options CFDictionary by hand was
+/// fragile (CFDictionaryCreate returning NULL → SIGSEGV inside
+/// AXIsProcessTrustedWithOptions), especially under Rosetta. Returns the current
+/// trusted status. On non-macOS platforms always returns true.
 pub fn request_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
-        #[link(name = "ApplicationServices", kind = "framework")]
-        extern "C" {
-            fn AXIsProcessTrustedWithOptions(options: *mut std::ffi::c_void) -> u8;
+        let trusted = is_accessibility_trusted();
+        if !trusted {
+            // Open the macOS Accessibility settings pane directly. Safe shell-out,
+            // no FFI, works the same on native arm64 and Rosetta x86_64.
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                .status();
         }
-        #[link(name = "CoreFoundation", kind = "framework")]
-        extern "C" {
-            fn CFDictionaryCreate(
-                allocator: *mut std::ffi::c_void,
-                keys: *const *mut std::ffi::c_void,
-                values: *const *mut std::ffi::c_void,
-                num_values: isize,
-                key_callbacks: *const std::ffi::c_void,
-                value_callbacks: *const std::ffi::c_void,
-            ) -> *mut std::ffi::c_void;
-            fn CFStringCreateWithCString(
-                allocator: *mut std::ffi::c_void,
-                c_str: *const i8,
-                encoding: u32,
-            ) -> *mut std::ffi::c_void;
-            static kCFTypeDictionaryKeyCallBacks: std::ffi::c_void;
-            static kCFTypeDictionaryValueCallBacks: std::ffi::c_void;
-        }
-        // kCFBooleanTrue — we link CoreFoundation and use the known address pattern
-        #[link(name = "CoreFoundation", kind = "framework")]
-        extern "C" {
-            static kCFBooleanTrue: *mut std::ffi::c_void;
-        }
-        // kCFStringEncodingUTF8 = 0x08000100
-        const K_CF_STRING_ENCODING_UTF8: u32 = 0x08000100;
-
-        unsafe {
-            let key = CFStringCreateWithCString(
-                std::ptr::null_mut(),
-                b"kAXTrustedCheckOptionPrompt\0".as_ptr() as *const i8,
-                K_CF_STRING_ENCODING_UTF8,
-            );
-            let value = kCFBooleanTrue;
-
-            let options = CFDictionaryCreate(
-                std::ptr::null_mut(),
-                &[key] as *const *mut std::ffi::c_void,
-                &[value] as *const *mut std::ffi::c_void,
-                1,
-                &kCFTypeDictionaryKeyCallBacks as *const std::ffi::c_void,
-                &kCFTypeDictionaryValueCallBacks as *const std::ffi::c_void,
-            );
-
-            let trusted = AXIsProcessTrustedWithOptions(options);
-            // options is leaked (trivial — called at most a few times)
-            trusted != 0
-        }
+        trusted
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -107,6 +73,63 @@ const CLIPBOARD_COPY_SETTLE_MS: u64 = 100;
 const VOLUME_POLL_INTERVAL_MS: u64 = 50;
 /// Timeout for STT finalization after recording stops.
 const STT_FINALIZE_TIMEOUT_SECS: u64 = 120;
+
+static LAST_AGENT_RESULT: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
+
+fn last_agent_result_slot() -> &'static Arc<Mutex<Option<String>>> {
+    LAST_AGENT_RESULT.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+pub fn latest_agent_result() -> Option<String> {
+    last_agent_result_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+pub fn show_agent_result_window(app_handle: &tauri::AppHandle, response: String) -> Result<()> {
+    *last_agent_result_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(response.clone());
+
+    let window = if let Some(window) = app_handle.get_webview_window("agent-result") {
+        window
+    } else {
+        WebviewWindowBuilder::new(
+            app_handle,
+            "agent-result",
+            WebviewUrl::App("index.html#agent-result".into()),
+        )
+        .title("Agent Response")
+        .inner_size(720.0, 560.0)
+        .min_inner_size(420.0, 320.0)
+        .resizable(true)
+        .decorations(true)
+        .visible(true)
+        .build()?
+    };
+
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    // The React listener may still be mounting in a newly-created window.
+    // Re-emitting is idempotent on the frontend and avoids a startup race.
+    let first = response.clone();
+    let second = response.clone();
+    let third = response;
+    let w1 = window.clone();
+    let w2 = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = w1.emit("agent:result", first);
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let _ = w2.emit("agent:result", second);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = window.emit("agent:result", third);
+    });
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +171,10 @@ pub struct PipelineHandle {
     accumulated_text: Arc<Mutex<String>>,
     stt_done: Arc<Notify>,
     abort_flag: Arc<AtomicBool>,
+    /// Set by `start_for_agent()` so the upcoming stop() routes the transcript
+    /// through Hermes regardless of trigger-word prefix. Reset at the end of
+    /// stop() (so a subsequent normal start/stop is unaffected).
+    force_agent_mode: Arc<AtomicBool>,
     preloaded_config: Arc<Mutex<Option<storage::AppConfig>>>,
     preloaded_app_ctx: Arc<Mutex<Option<app_detector::AppContext>>>,
     preloaded_dictionary: Arc<Mutex<Option<Vec<String>>>>,
@@ -171,6 +198,7 @@ impl PipelineHandle {
             accumulated_text: Arc::new(Mutex::new(String::new())),
             stt_done: Arc::new(Notify::new()),
             abort_flag: Arc::new(AtomicBool::new(false)),
+            force_agent_mode: Arc::new(AtomicBool::new(false)),
             preloaded_config: Arc::new(Mutex::new(None)),
             preloaded_app_ctx: Arc::new(Mutex::new(None)),
             preloaded_dictionary: Arc::new(Mutex::new(None)),
@@ -209,7 +237,10 @@ impl PipelineHandle {
     /// Stops audio capture, forces state to Idle, and signals any
     /// ongoing stop() to exit early via abort_flag.
     pub fn abort(&self) {
-        tracing::info!("Pipeline abort requested (current state: {:?})", self.current_state());
+        tracing::info!(
+            "Pipeline abort requested (current state: {:?})",
+            self.current_state()
+        );
 
         // Set abort flag so any running stop() exits early
         self.abort_flag.store(true, Ordering::SeqCst);
@@ -227,7 +258,14 @@ impl PipelineHandle {
         self.stt_done.notify_one();
 
         // Clear accumulated text
-        self.accumulated_text.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.accumulated_text
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+
+        // Reset force_agent so a subsequent normal start() isn't poisoned by
+        // a previously-armed agent recording that got aborted before stop().
+        self.force_agent_mode.store(false, Ordering::SeqCst);
 
         // Force state to Idle — emits pipeline:state event to sync frontend
         self.set_state(PipelineState::Idle);
@@ -240,10 +278,18 @@ impl PipelineHandle {
         let mut clipboard = arboard::Clipboard::new().ok()?;
         let backup = clipboard.get_text().ok();
 
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("osascript")
+                .args([
+                    "-e",
+                    r#"tell application "System Events" to keystroke "c" using command down"#,
+                ])
+                .output();
+        }
+
+        #[cfg(not(target_os = "macos"))]
         if let Ok(mut enigo) = Enigo::new(&EnigoSettings::default()) {
-            #[cfg(target_os = "macos")]
-            let modifier = Key::Meta;
-            #[cfg(not(target_os = "macos"))]
             let modifier = Key::Control;
 
             let pressed = enigo.key(modifier, Direction::Press).is_ok();
@@ -292,6 +338,15 @@ impl PipelineHandle {
             .load()
             .await
             .unwrap_or_default()
+    }
+
+    /// Start a recording that, on stop(), will be routed through the Hermes
+    /// agent regardless of whether the transcript begins with a trigger-word
+    /// prefix. The whole transcript becomes the agent prompt. Use this when
+    /// the user explicitly invokes the agent (via dedicated hotkey).
+    pub async fn start_for_agent(&self) -> Result<()> {
+        self.force_agent_mode.store(true, Ordering::SeqCst);
+        self.start().await
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -358,6 +413,13 @@ impl PipelineHandle {
             config_data.stt_api_key.len(),
             config_data.stt_language
         );
+
+        // Pause locally-playing music / video so the mic doesn't pick it up.
+        // Best-effort, non-blocking (spawns its own thread internally), only
+        // targets apps with AppleScript player-state support.
+        if config_data.auto_pause_media {
+            crate::media::pause_local_media();
+        }
 
         // Guard: empty API key — bail before starting audio (skip for cloud provider)
         if config_data.stt_api_key.is_empty() && config_data.stt_provider != "cloud" {
@@ -433,10 +495,9 @@ impl PipelineHandle {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Audio capture failed: {}", e);
-                let _ = self.app_handle.emit(
-                    "pipeline:error",
-                    format!("Audio capture failed: {e}"),
-                );
+                let _ = self
+                    .app_handle
+                    .emit("pipeline:error", format!("Audio capture failed: {e}"));
                 *self
                     .preloaded_config
                     .lock()
@@ -738,24 +799,132 @@ impl PipelineHandle {
             .to_string();
 
         if raw_text.is_empty() {
-            let _ = self
-                .app_handle
-                .emit("pipeline:error", "No speech detected. Please try again.");
+            // If the recording was extremely short (e.g. user double-tapped the hotkey
+            // or accidentally clicked the capsule twice), treat it as a misfire and
+            // silently return to Idle instead of yelling "No speech detected" at them.
+            let recording_duration = self
+                .recording_start
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .map(|t| t.elapsed());
+            let was_a_misfire = recording_duration
+                .map(|d| d < std::time::Duration::from_millis(500))
+                .unwrap_or(false);
+            if !was_a_misfire {
+                let _ = self
+                    .app_handle
+                    .emit("pipeline:error", "No speech detected. Please try again.");
+            } else {
+                tracing::info!(
+                    "Recording too short ({:?}) — treating as misfire, no error",
+                    recording_duration
+                );
+            }
+            // Clear recording_start so the next start() gets a fresh instant
+            *self
+                .recording_start
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             self.set_state(PipelineState::Idle);
             return Ok(());
         }
 
         let final_text;
         let llm_elapsed;
+        let mut agent_response: Option<String> = None;
 
-        // Polish with LLM (resources already pre-built)
-        // Check abort before entering LLM polish and output
+        // Route explicit agent commands before the normal dictation polish path.
+        // Two ways to land on Hermes:
+        //   1. User pressed the dedicated agent hotkey → `force_agent_mode` is
+        //      set, the WHOLE transcript becomes the agent prompt (no prefix
+        //      stripping). This bypasses STT mishearing of "Hermes"/"agent".
+        //   2. Transcript starts with a trigger word like "hermes" / "agent" /
+        //      "ask hermes" / "ask agent" — strip the prefix and use the rest.
+        //
+        // `force_agent_mode` is `swap`-ped so the flag is auto-reset for the
+        // next recording, even if we abort early below.
+        let force_agent = self.force_agent_mode.swap(false, Ordering::SeqCst);
+        let hermes_prompt = if force_agent {
+            if raw_text.is_empty() {
+                None
+            } else {
+                Some(raw_text.clone())
+            }
+        } else if config.agent_enabled {
+            agent::parse_agent_prompt(&raw_text)
+        } else {
+            None
+        };
+
+        // Polish with LLM (resources already pre-built), or run Hermes when requested.
+        // Check abort before entering LLM/agent and output
         if self.abort_flag.load(Ordering::SeqCst) {
-            tracing::info!("Pipeline aborted before LLM/output");
+            tracing::info!("Pipeline aborted before LLM/agent/output");
             return Ok(());
         }
 
-        if let Some((llm_config, provider)) = pre_llm {
+        if let Some(prompt) = hermes_prompt {
+            self.set_state(PipelineState::Polishing);
+            let agent_start = std::time::Instant::now();
+            let _ = self
+                .app_handle
+                .emit("llm:chunk", "Running agent...\n");
+            let _ = self
+                .app_handle
+                .emit("agent:status", agent::runtime_label(&config));
+
+            let request = AgentRequest {
+                prompt,
+                app_context: app_ctx.clone(),
+                selected_text: selected_text.clone(),
+                config: config.clone(),
+            };
+
+            match agent::run_agent(request).await {
+                Ok(response) => {
+                    if self.abort_flag.load(Ordering::SeqCst) {
+                        tracing::info!("Pipeline aborted after agent response, skipping output");
+                        return Ok(());
+                    }
+                    llm_elapsed = agent_start.elapsed();
+                    // Agent results are shown in a dedicated window — do not type/paste.
+                    if let Err(e) = show_agent_result_window(&self.app_handle, response.clone()) {
+                        tracing::error!("Failed to show agent result window: {}", e);
+                        let _ = self
+                            .app_handle
+                            .emit("pipeline:error", format!("Agent result window failed: {e}"));
+                    }
+                    // Native notification so the user sees the result even if
+                    // they're in another app and miss the agent panel surfacing.
+                    if config.agent_notification {
+                        crate::notify::show_agent_notification(&response);
+                    }
+                    final_text = raw_text.clone();
+                    // Store full agent response in history entry (set below)
+                    agent_response = Some(response);
+                }
+                Err(e) => {
+                    tracing::error!("Agent run failed: {}", e);
+                    final_text = raw_text.clone();
+                    llm_elapsed = agent_start.elapsed();
+                    let err_text = e.to_string();
+                    let _ = self
+                        .app_handle
+                        .emit("pipeline:error", format!("Agent failed: {err_text}"));
+                    // Also notify on failure — same reason: user may be elsewhere.
+                    if config.agent_notification {
+                        crate::notify::show_agent_notification(&format!(
+                            "Agent failed: {err_text}"
+                        ));
+                    }
+                }
+            }
+
+            tracing::info!(
+                "[Pipeline Timing] Agent: {}ms",
+                llm_elapsed.as_millis()
+            );
+        } else if let Some((llm_config, provider)) = pre_llm {
             self.set_state(PipelineState::Polishing);
             let llm_start = std::time::Instant::now();
 
@@ -878,6 +1047,7 @@ impl PipelineHandle {
             polished_text: final_text,
             language: None,
             duration_ms,
+            agent_response,
         };
         if let Err(e) = self
             .app_handle
@@ -900,10 +1070,10 @@ impl PipelineHandle {
     ) -> Result<()> {
         self.set_state(PipelineState::Outputting);
 
-        let mode = if config.output_mode == "keyboard" {
-            OutputMode::Keyboard
-        } else {
+        let mode = if config.output_mode != "keyboard" {
             OutputMode::Clipboard
+        } else {
+            OutputMode::Keyboard
         };
 
         // On macOS, keyboard output uses CGEventPost via enigo which requires
@@ -912,7 +1082,7 @@ impl PipelineHandle {
             anyhow::bail!("ACCESSIBILITY_REQUIRED");
         }
 
-        let output = output::create_output(mode);
+        let output = output::create_output(mode, app_name);
         output.type_text(text).await?;
 
         let _ = self.app_handle.emit("pipeline:target_app", app_name);
