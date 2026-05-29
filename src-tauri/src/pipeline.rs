@@ -254,6 +254,9 @@ impl PipelineHandle {
             *handle = None;
         }
 
+        // Recording aborted — resume any media we paused on start.
+        crate::media::resume_local_media();
+
         // Unblock stop() if it's waiting on stt_done.notified()
         self.stt_done.notify_one();
 
@@ -707,6 +710,9 @@ impl PipelineHandle {
             }
             *handle = None;
         }
+
+        // Recording is over — resume any media we paused on start.
+        crate::media::resume_local_media();
 
         // P2-1: Pre-build LLM resources while waiting for STT
         let preloaded_config = self

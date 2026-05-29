@@ -42,8 +42,30 @@ repeat with appName in targetApps
         end try
     end if
 end repeat
+-- Return one app name per line. `paused as string` would concatenate the list
+-- with no separator ("SpotifyMusic"); a linefeed delimiter lets the caller
+-- recover the individual names to resume later.
+set AppleScript's text item delimiters to linefeed
 return paused as string
 "#;
+
+/// Records what the most recent record-start paused, so record-stop can resume
+/// exactly those — and nothing the user paused themselves. Sequential by
+/// construction (the pipeline state machine forbids overlapping recordings).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct PausedState {
+    /// Scriptable apps paused via AppleScript (resume with `play`).
+    scriptable_apps: Vec<String>,
+    /// Whether we sent the system play/pause key (resume by sending it again).
+    sent_media_key: bool,
+}
+
+#[cfg(target_os = "macos")]
+static PAUSED: std::sync::Mutex<PausedState> = std::sync::Mutex::new(PausedState {
+    scriptable_apps: Vec::new(),
+    sent_media_key: false,
+});
 
 /// Best-effort: pause any currently-playing local media apps. Returns
 /// silently on failure (this is a nice-to-have, never a blocker). Spawns
@@ -56,16 +78,19 @@ pub fn pause_local_media() {
                 .arg("-e")
                 .arg(PAUSE_SCRIPT)
                 .output();
-            // Did the AppleScript pass pause a scriptable app (Spotify/Music/…)?
-            let scripted_pause = match output {
+            // Names of scriptable apps the AppleScript pass paused (one per line).
+            let scriptable_apps: Vec<String> = match output {
                 Ok(out) if out.status.success() => {
-                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !stdout.is_empty() {
-                        tracing::info!("Paused media in: {}", stdout);
-                        true
-                    } else {
-                        false
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let apps: Vec<String> = stdout
+                        .lines()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !apps.is_empty() {
+                        tracing::info!("Paused media in: {}", apps.join(", "));
                     }
+                    apps
                 }
                 Ok(out) => {
                     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -74,11 +99,11 @@ pub fn pause_local_media() {
                         out.status.code(),
                         stderr.trim()
                     );
-                    false
+                    Vec::new()
                 }
                 Err(e) => {
                     tracing::debug!("media pause: osascript spawn failed: {e}");
-                    false
+                    Vec::new()
                 }
             };
 
@@ -92,15 +117,73 @@ pub fn pause_local_media() {
             // send it when the default output device is actually rendering audio
             // right now. Without this guard, pressing it while nothing plays
             // would START playback instead of pausing it.
-            if !scripted_pause && audio_output_is_active() {
+            let audio_active = audio_output_is_active();
+            let sent_media_key = scriptable_apps.is_empty() && audio_active;
+            tracing::info!(
+                "media pause decision: scriptable={:?} audio_active={} → media_key={}",
+                scriptable_apps,
+                audio_active,
+                sent_media_key
+            );
+            if sent_media_key {
                 unsafe { send_play_pause_key() };
             }
+
+            // Remember what we paused so resume_local_media() can restore exactly
+            // these — and only these — when the recording ends.
+            *PAUSED.lock().unwrap_or_else(|e| e.into_inner()) = PausedState {
+                scriptable_apps,
+                sent_media_key,
+            };
         });
     }
     #[cfg(not(target_os = "macos"))]
     {
         // Linux / Windows pause is doable via playerctl / SMTC but out of
         // scope right now — primary use case is macOS.
+    }
+}
+
+/// Resume whatever `pause_local_media()` paused for the current recording.
+///
+/// Reads and clears the remembered state, so it only ever resumes apps WE
+/// paused — never something the user paused themselves. A no-op if the last
+/// record start paused nothing (auto-pause off, nothing was playing, or
+/// already resumed). Spawned off-thread; resume is not latency-critical.
+pub fn resume_local_media() {
+    #[cfg(target_os = "macos")]
+    {
+        let state = std::mem::take(&mut *PAUSED.lock().unwrap_or_else(|e| e.into_inner()));
+        if state.scriptable_apps.is_empty() && !state.sent_media_key {
+            return; // nothing to resume
+        }
+        std::thread::spawn(move || {
+            for app in &state.scriptable_apps {
+                // App names come from our own fixed target list (echoed back by
+                // the pause script), never user input — safe to inline.
+                let script = format!(
+                    "using terms from application \"Music\"\n\
+                         tell application \"{app}\" to play\n\
+                     end using terms from"
+                );
+                let _ = std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .output();
+            }
+            if !state.scriptable_apps.is_empty() {
+                tracing::info!("Resumed media in: {}", state.scriptable_apps.join(", "));
+            }
+            // Toggle the non-scriptable player (QQ Music etc.) back to playing.
+            if state.sent_media_key {
+                unsafe { send_play_pause_key() };
+                tracing::info!("Resumed media via play/pause key");
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No-op on non-macOS (pause is macOS-only for now).
     }
 }
 
@@ -219,6 +302,7 @@ unsafe fn send_play_pause_key() {
     const NX_KEYTYPE_PLAY: isize = 16;
     const NS_EVENT_TYPE_SYSTEM_DEFINED: usize = 14;
     const SUBTYPE_AUX_CONTROL_BUTTONS: i16 = 8;
+    tracing::info!("send_play_pause_key: posting media play/pause key");
     // data1 low byte encodes key state: 0xA = down, 0xB = up.
     for &state in &[0x0A_isize, 0x0B_isize] {
         let data1: isize = (NX_KEYTYPE_PLAY << 16) | (state << 8);

@@ -91,10 +91,50 @@ impl SttProvider for QwenAsrProvider {
         }
 
         let audio_len_secs = self.audio_buffer.len() as f64 / (config.sample_rate as f64 * 2.0);
+
+        // Silence guard: measure the recorded signal (i16 LE PCM). When the mic
+        // captured essentially nothing — wrong/dead input device, Bluetooth
+        // headset in its case, muted mic — ASR models don't return empty; they
+        // HALLUCINATE a stock phrase ("Thank you.", "Thanks for watching."). So
+        // we detect near-silence here and return None, which the pipeline shows
+        // as an honest "No speech detected" instead of a bogus transcript.
+        let (peak, rms) = {
+            let mut peak: i32 = 0;
+            let mut sum_sq: f64 = 0.0;
+            let mut n: usize = 0;
+            for pair in self.audio_buffer.chunks_exact(2) {
+                let s = i16::from_le_bytes([pair[0], pair[1]]) as i32;
+                peak = peak.max(s.abs());
+                sum_sq += (s as f64) * (s as f64);
+                n += 1;
+            }
+            let rms = if n > 0 { (sum_sq / n as f64).sqrt() } else { 0.0 };
+            (peak, rms)
+        };
+        // Peak well under ~1.5% of full scale over the whole take means there
+        // was no real speech. Conservative — ordinary quiet speech far exceeds it.
+        const SILENCE_PEAK_THRESHOLD: i32 = 500;
+        if peak < SILENCE_PEAK_THRESHOLD {
+            tracing::warn!(
+                "Qwen ASR: audio is near-silent (peak={}, rms={:.1}, {:.1}s) — skipping STT \
+                 to avoid a hallucinated transcript. Check the input microphone.",
+                peak,
+                rms,
+                audio_len_secs
+            );
+            self.audio_buffer.clear();
+            return Ok(None);
+        }
+
         let wav_data = Self::build_wav(&self.audio_buffer, config.sample_rate);
         self.audio_buffer.clear();
 
-        tracing::info!("Qwen ASR: sending {:.1}s of audio", audio_len_secs);
+        tracing::info!(
+            "Qwen ASR: sending {:.1}s of audio (peak={}, rms={:.1})",
+            audio_len_secs,
+            peak,
+            rms
+        );
 
         let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_data);
         let audio_uri = format!("data:audio/wav;base64,{b64}");
