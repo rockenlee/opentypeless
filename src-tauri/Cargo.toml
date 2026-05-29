@@ -45,11 +45,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 url = "2"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Used to synthesise a system media play/pause key event so non-AppleScript
-# media apps (QQ Music, browser tabs, etc.) can be paused on record start.
-objc = "0.2"
-
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rdev = "0.5"
 

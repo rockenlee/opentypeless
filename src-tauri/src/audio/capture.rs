@@ -15,6 +15,11 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub chunk_duration_ms: u32,
+    /// Preferred input device name (as reported by `Device::name()`). Empty =
+    /// use the system default input. Lets the user pin a specific mic — chiefly
+    /// the built-in one, so recording doesn't force AirPods into low-quality
+    /// HFP mode and degrade music playback.
+    pub preferred_input_device: String,
 }
 
 impl Default for AudioConfig {
@@ -23,7 +28,17 @@ impl Default for AudioConfig {
             sample_rate: 16000,
             channels: 1,
             chunk_duration_ms: 20,
+            preferred_input_device: String::new(),
         }
+    }
+}
+
+/// List the names of available input devices. Used by the frontend mic picker.
+pub fn list_input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -196,9 +211,31 @@ fn run_capture(
     ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> Result<()> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
+    // Prefer the user-pinned device by name; fall back to the system default if
+    // it's unset or not currently present (e.g. the chosen mic was unplugged).
+    let device = {
+        let preferred = config.preferred_input_device.trim();
+        let by_name = if preferred.is_empty() {
+            None
+        } else {
+            host.input_devices()
+                .ok()
+                .and_then(|mut ds| ds.find(|d| d.name().map(|n| n == preferred).unwrap_or(false)))
+        };
+        match by_name {
+            Some(d) => d,
+            None => {
+                if !preferred.is_empty() {
+                    tracing::warn!(
+                        "Preferred input device '{}' not found — using system default",
+                        preferred
+                    );
+                }
+                host.default_input_device()
+                    .ok_or_else(|| anyhow::anyhow!("No input device available"))?
+            }
+        }
+    };
 
     tracing::info!("Using input device: {:?}", device.name());
 

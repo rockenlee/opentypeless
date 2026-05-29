@@ -501,7 +501,10 @@ impl PipelineHandle {
         }
 
         // Start audio capture on dedicated thread
-        let config = AudioConfig::default();
+        let config = AudioConfig {
+            preferred_input_device: config_data.preferred_input_device.clone(),
+            ..AudioConfig::default()
+        };
         let (handle, mut audio_rx) = match AudioCaptureHandle::start(config) {
             Ok(result) => result,
             Err(e) => {

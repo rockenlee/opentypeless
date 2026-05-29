@@ -207,6 +207,12 @@ async fn start_recording(state: tauri::State<'_, pipeline::PipelineHandle>) -> R
     state.start().await.map_err(|e| e.to_string())
 }
 
+/// List available input device names for the microphone picker in Settings.
+#[tauri::command]
+fn list_input_devices() -> Vec<String> {
+    crate::audio::capture::list_input_device_names()
+}
+
 #[tauri::command]
 async fn stop_recording(state: tauri::State<'_, pipeline::PipelineHandle>) -> Result<(), String> {
     state.stop().await.map_err(|e| e.to_string())
@@ -2230,6 +2236,7 @@ pub fn run() {
             start_recording,
             stop_recording,
             abort_recording,
+            list_input_devices,
             test_audio_capture,
             check_accessibility_permission,
             request_accessibility_permission,

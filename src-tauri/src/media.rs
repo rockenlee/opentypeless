@@ -1,15 +1,15 @@
 //! macOS local-media pause helper. Called from the pipeline on record start so
-//! music / podcasts / video playback don't bleed into the microphone.
+//! music / podcasts / video playback don't bleed into the microphone, and on
+//! record stop to resume exactly what we paused.
 //!
-//! Approach: shell out to a single osascript that iterates over known apps
-//! and tells each one to pause IF it is running and currently playing. We
-//! only target apps that expose an AppleScript "player state" + "pause"
-//! interface — apps that don't (e.g. QQ Music, browser tabs) are out of
-//! scope; documented in INSTALL_macOS.md.
-//!
-//! No auto-resume on record stop. Symmetric resume is doable (cache the set
-//! of paused apps, send `play`) but it's surprising if the user manually
-//! paused something before recording and the app then auto-resumes it.
+//! Scope: only apps that expose the iTunes-family AppleScript interface
+//! (`player state` + `pause` / `play`) — Spotify, Apple Music, Podcasts, Apple
+//! TV, VLC, IINA. Apps without it (QQ Music, NetEase, browser tabs) are NOT
+//! controlled: the only lever for them is the system play/pause media key,
+//! which is a blind toggle that proved unreliable (it would start playback
+//! when nothing was playing, and fights the Bluetooth HFP mode switch on
+//! AirPods). The robust answer for those is to record with the built-in
+//! microphone so playback isn't disturbed — see the microphone preference.
 
 #[cfg(target_os = "macos")]
 const PAUSE_SCRIPT: &str = r#"
@@ -49,25 +49,14 @@ set AppleScript's text item delimiters to linefeed
 return paused as string
 "#;
 
-/// Records what the most recent record-start paused, so record-stop can resume
-/// exactly those — and nothing the user paused themselves. Sequential by
-/// construction (the pipeline state machine forbids overlapping recordings).
+/// Records which scriptable apps the most recent record-start paused, so
+/// record-stop can resume exactly those — and nothing the user paused
+/// themselves. Sequential by construction (the pipeline state machine forbids
+/// overlapping recordings).
 #[cfg(target_os = "macos")]
-#[derive(Default)]
-struct PausedState {
-    /// Scriptable apps paused via AppleScript (resume with `play`).
-    scriptable_apps: Vec<String>,
-    /// Whether we sent the system play/pause key (resume by sending it again).
-    sent_media_key: bool,
-}
+static PAUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-#[cfg(target_os = "macos")]
-static PAUSED: std::sync::Mutex<PausedState> = std::sync::Mutex::new(PausedState {
-    scriptable_apps: Vec::new(),
-    sent_media_key: false,
-});
-
-/// Best-effort: pause any currently-playing local media apps. Returns
+/// Best-effort: pause any currently-playing scriptable media apps. Returns
 /// silently on failure (this is a nice-to-have, never a blocker). Spawns
 /// off the calling thread so we don't add latency to record start.
 pub fn pause_local_media() {
@@ -107,34 +96,9 @@ pub fn pause_local_media() {
                 }
             };
 
-            // Only fall back to the system play/pause key when the AppleScript
-            // pass paused nothing. If it DID pause a scriptable app, sending the
-            // media key would re-toggle that same now-playing app back to play.
-            // The fallback covers non-scriptable players (QQ Music, browser
-            // tabs).
-            //
-            // The media key is a BLIND toggle (no play/pause query), so we only
-            // send it when the default output device is actually rendering audio
-            // right now. Without this guard, pressing it while nothing plays
-            // would START playback instead of pausing it.
-            let audio_active = audio_output_is_active();
-            let sent_media_key = scriptable_apps.is_empty() && audio_active;
-            tracing::info!(
-                "media pause decision: scriptable={:?} audio_active={} → media_key={}",
-                scriptable_apps,
-                audio_active,
-                sent_media_key
-            );
-            if sent_media_key {
-                unsafe { send_play_pause_key() };
-            }
-
             // Remember what we paused so resume_local_media() can restore exactly
             // these — and only these — when the recording ends.
-            *PAUSED.lock().unwrap_or_else(|e| e.into_inner()) = PausedState {
-                scriptable_apps,
-                sent_media_key,
-            };
+            *PAUSED.lock().unwrap_or_else(|e| e.into_inner()) = scriptable_apps;
         });
     }
     #[cfg(not(target_os = "macos"))]
@@ -148,17 +112,16 @@ pub fn pause_local_media() {
 ///
 /// Reads and clears the remembered state, so it only ever resumes apps WE
 /// paused — never something the user paused themselves. A no-op if the last
-/// record start paused nothing (auto-pause off, nothing was playing, or
-/// already resumed). Spawned off-thread; resume is not latency-critical.
+/// record start paused nothing. Spawned off-thread; resume is not latency-critical.
 pub fn resume_local_media() {
     #[cfg(target_os = "macos")]
     {
-        let state = std::mem::take(&mut *PAUSED.lock().unwrap_or_else(|e| e.into_inner()));
-        if state.scriptable_apps.is_empty() && !state.sent_media_key {
+        let apps = std::mem::take(&mut *PAUSED.lock().unwrap_or_else(|e| e.into_inner()));
+        if apps.is_empty() {
             return; // nothing to resume
         }
         std::thread::spawn(move || {
-            for app in &state.scriptable_apps {
+            for app in &apps {
                 // App names come from our own fixed target list (echoed back by
                 // the pause script), never user input — safe to inline.
                 let script = format!(
@@ -171,160 +134,11 @@ pub fn resume_local_media() {
                     .arg(&script)
                     .output();
             }
-            if !state.scriptable_apps.is_empty() {
-                tracing::info!("Resumed media in: {}", state.scriptable_apps.join(", "));
-            }
-            // Toggle the non-scriptable player (QQ Music etc.) back to playing.
-            if state.sent_media_key {
-                unsafe { send_play_pause_key() };
-                tracing::info!("Resumed media via play/pause key");
-            }
+            tracing::info!("Resumed media in: {}", apps.join(", "));
         });
     }
     #[cfg(not(target_os = "macos"))]
     {
         // No-op on non-macOS (pause is macOS-only for now).
-    }
-}
-
-/// Is the system default output device currently rendering audio?
-///
-/// Uses the public CoreAudio property `kAudioDevicePropertyDeviceIsRunningSomewhere`,
-/// which is true whenever any process is actively playing through the default
-/// output device. We query the OUTPUT device specifically, so our own
-/// microphone capture (an INPUT device) never trips it. This is the state
-/// check that makes the blind media play/pause key safe to send: if nothing is
-/// playing we skip it and avoid accidentally starting playback.
-///
-/// Returns false on any CoreAudio error — the conservative choice, since the
-/// reported bug is "starts music when nothing was playing".
-#[cfg(target_os = "macos")]
-fn audio_output_is_active() -> bool {
-    #[repr(C)]
-    struct AudioObjectPropertyAddress {
-        m_selector: u32,
-        m_scope: u32,
-        m_element: u32,
-    }
-
-    #[link(name = "CoreAudio", kind = "framework")]
-    extern "C" {
-        fn AudioObjectGetPropertyData(
-            in_object_id: u32,
-            in_address: *const AudioObjectPropertyAddress,
-            in_qualifier_data_size: u32,
-            in_qualifier_data: *const std::ffi::c_void,
-            io_data_size: *mut u32,
-            out_data: *mut std::ffi::c_void,
-        ) -> i32;
-    }
-
-    // FourCC constants (big-endian char codes).
-    const SYSTEM_OBJECT: u32 = 1; // kAudioObjectSystemObject
-    const DEFAULT_OUTPUT_DEVICE: u32 = u32::from_be_bytes(*b"dOut"); // kAudioHardwarePropertyDefaultOutputDevice
-    const IS_RUNNING_SOMEWHERE: u32 = u32::from_be_bytes(*b"gone"); // kAudioDevicePropertyDeviceIsRunningSomewhere
-    const SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob"); // kAudioObjectPropertyScopeGlobal
-    const ELEMENT_MAIN: u32 = 0; // kAudioObjectPropertyElementMain
-
-    unsafe {
-        // 1. Resolve the default output device id.
-        let dev_addr = AudioObjectPropertyAddress {
-            m_selector: DEFAULT_OUTPUT_DEVICE,
-            m_scope: SCOPE_GLOBAL,
-            m_element: ELEMENT_MAIN,
-        };
-        let mut device_id: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
-        let status = AudioObjectGetPropertyData(
-            SYSTEM_OBJECT,
-            &dev_addr,
-            0,
-            std::ptr::null(),
-            &mut size,
-            &mut device_id as *mut u32 as *mut std::ffi::c_void,
-        );
-        if status != 0 || device_id == 0 {
-            tracing::debug!("audio_output_is_active: no default output device (status={status})");
-            return false;
-        }
-
-        // 2. Is that device running (rendering) somewhere?
-        let run_addr = AudioObjectPropertyAddress {
-            m_selector: IS_RUNNING_SOMEWHERE,
-            m_scope: SCOPE_GLOBAL,
-            m_element: ELEMENT_MAIN,
-        };
-        let mut running: u32 = 0;
-        let mut rsize = std::mem::size_of::<u32>() as u32;
-        let status = AudioObjectGetPropertyData(
-            device_id,
-            &run_addr,
-            0,
-            std::ptr::null(),
-            &mut rsize,
-            &mut running as *mut u32 as *mut std::ffi::c_void,
-        );
-        if status != 0 {
-            tracing::debug!("audio_output_is_active: IsRunningSomewhere query failed (status={status})");
-            return false;
-        }
-        running != 0
-    }
-}
-
-/// Synthesise a press+release of the hardware "play/pause" media key.
-///
-/// macOS routes this key to the current "now playing" app via the system
-/// media controls, so it works for players that expose no AppleScript
-/// interface (QQ Music, browser tabs, NetEase Music, …) — the apps the
-/// AppleScript pass above can't touch. It is delivered as an
-/// NSEventTypeSystemDefined event (subtype 8), which is the only documented
-/// way to emit a media key; plain CGEvent keyboard events don't carry it.
-#[cfg(target_os = "macos")]
-unsafe fn send_play_pause_key() {
-    use objc::runtime::Object;
-    use objc::{class, msg_send, sel, sel_impl};
-
-    #[repr(C)]
-    struct NSPoint {
-        x: f64,
-        y: f64,
-    }
-
-    // CoreGraphics: post a CGEvent at the HID tap (0). The CGEventRef we get
-    // from -[NSEvent CGEvent] is owned by the autoreleased NSEvent, so we post
-    // it without releasing.
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
-    }
-
-    const NX_KEYTYPE_PLAY: isize = 16;
-    const NS_EVENT_TYPE_SYSTEM_DEFINED: usize = 14;
-    const SUBTYPE_AUX_CONTROL_BUTTONS: i16 = 8;
-    tracing::info!("send_play_pause_key: posting media play/pause key");
-    // data1 low byte encodes key state: 0xA = down, 0xB = up.
-    for &state in &[0x0A_isize, 0x0B_isize] {
-        let data1: isize = (NX_KEYTYPE_PLAY << 16) | (state << 8);
-        let loc = NSPoint { x: 0.0, y: 0.0 };
-        let event: *mut Object = msg_send![class!(NSEvent),
-            otherEventWithType: NS_EVENT_TYPE_SYSTEM_DEFINED
-            location: loc
-            modifierFlags: 0usize
-            timestamp: 0.0f64
-            windowNumber: 0isize
-            context: std::ptr::null_mut::<Object>()
-            subtype: SUBTYPE_AUX_CONTROL_BUTTONS
-            data1: data1
-            data2: -1isize
-        ];
-        if event.is_null() {
-            tracing::debug!("send_play_pause_key: NSEvent creation returned nil");
-            continue;
-        }
-        let cg: *mut std::ffi::c_void = msg_send![event, CGEvent];
-        if !cg.is_null() {
-            CGEventPost(0, cg);
-        }
     }
 }

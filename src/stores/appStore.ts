@@ -70,6 +70,9 @@ export interface AppConfig {
   max_recording_seconds: number
   ui_language: string
   capsule_auto_hide: boolean
+  /** Preferred input device name (empty = system default). Pin the built-in mic
+   *  so recording doesn't downgrade AirPods to low-quality HFP mode. */
+  preferred_input_device: string
   // Agent integration (generic local-CLI). User picks a preset from
   // {hermes, claude, gemini, custom}; presets supply default command + args.
   // Any field can be overridden manually.
@@ -215,6 +218,7 @@ const defaultConfig: AppConfig = {
   max_recording_seconds: 30,
   ui_language: 'en',
   capsule_auto_hide: true,
+  preferred_input_device: '',
   // Agent integration. Frontend defaults are minimal — the Rust backend
   // resolves the real per-preset binary path at runtime via $HOME-based
   // candidate paths (no hard-coded usernames), so the JS bundle is shareable.

@@ -29,6 +29,10 @@ pub struct AppConfig {
     pub max_recording_seconds: u32,
     pub ui_language: String,
     pub capsule_auto_hide: bool,
+    /// Preferred input device name (empty = system default). Lets the user pin
+    /// the built-in mic so recording doesn't downgrade AirPods to HFP.
+    #[serde(default)]
+    pub preferred_input_device: String,
     // --- Agent integration ---
     // Generic local-CLI agent invocation. User picks a preset (hermes / claude
     // / gemini / custom); each preset has a default binary name + args
@@ -164,6 +168,7 @@ impl Default for AppConfig {
             max_recording_seconds: 30,
             ui_language: "en".to_string(),
             capsule_auto_hide: true,
+            preferred_input_device: String::new(),
             agent_enabled: true,
             agent_preset: default_agent_preset(),
             agent_command: String::new(),

@@ -3378,7 +3378,6 @@ dependencies = [
  "enigo",
  "futures-util",
  "http",
- "objc",
  "rdev",
  "reqwest 0.12.28",
  "rusqlite",

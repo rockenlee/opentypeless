@@ -14,6 +14,11 @@ export async function abortRecording(): Promise<void> {
   return invoke('abort_recording')
 }
 
+/** Names of available audio input devices, for the microphone picker. */
+export async function listInputDevices(): Promise<string[]> {
+  return invoke('list_input_devices')
+}
+
 export interface AudioCaptureTestResult {
   duration_ms: number
   chunks: number

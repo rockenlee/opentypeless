@@ -2,10 +2,15 @@ import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../../stores/appStore'
 import { useAuthStore } from '../../stores/authStore'
 import { STT_PROVIDERS, LANGUAGES } from '../../lib/constants'
-import { benchSttConnection, testAudioCapture } from '../../lib/tauri'
+import { benchSttConnection, testAudioCapture, listInputDevices } from '../../lib/tauri'
 import { FormField } from './shared/FormField'
 import { CheckCircle2, XCircle, Loader2, Crown } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+
+/** Built-in Mac mics report names like "MacBook Pro Microphone" / "iMac Microphone".
+ *  We flag these as recommended because using them avoids forcing AirPods (or any
+ *  Bluetooth headset) into low-quality HFP mode while recording. */
+const BUILTIN_MIC_RE = /(MacBook|iMac|Mac mini|Mac Pro|Mac Studio).*Microphone/i
 
 export function SttPane() {
   const config = useAppStore((s) => s.config)
@@ -18,6 +23,13 @@ export function SttPane() {
   const { t } = useTranslation()
   const [audioStatus, setAudioStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [audioMessage, setAudioMessage] = useState('')
+  const [inputDevices, setInputDevices] = useState<string[]>([])
+
+  useEffect(() => {
+    listInputDevices()
+      .then(setInputDevices)
+      .catch(() => setInputDevices([]))
+  }, [])
 
   const isCloud = config.stt_provider === 'cloud'
 
@@ -122,6 +134,22 @@ export function SttPane() {
           <p className="text-[11px] text-text-tertiary mt-1.5">{t('settings.storedLocally')}</p>
         </FormField>
       )}
+
+      <FormField label={t('settings.microphone')}>
+        <select
+          value={config.preferred_input_device}
+          onChange={(e) => updateConfig({ preferred_input_device: e.target.value })}
+          className="w-full px-3 py-2.5 bg-bg-secondary border border-border rounded-[10px] text-[13px] text-text-primary outline-none focus:border-border-focus transition-colors"
+        >
+          <option value="">{t('settings.micSystemDefault')}</option>
+          {inputDevices.map((name) => (
+            <option key={name} value={name}>
+              {BUILTIN_MIC_RE.test(name) ? `${name} — ${t('settings.micRecommended')}` : name}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-text-tertiary mt-1.5">{t('settings.micHint')}</p>
+      </FormField>
 
       <FormField label={t('settings.microphoneCapture')}>
         <button
