@@ -455,6 +455,13 @@ impl PipelineHandle {
             config_data.stt_api_key.clone()
         };
 
+        let stt_hotwords = self
+            .preloaded_dictionary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default();
+
         let stt_config = SttConfig {
             api_key: stt_api_key,
             language: if config_data.stt_language == "multi" {
@@ -464,6 +471,7 @@ impl PipelineHandle {
             },
             smart_format: true,
             sample_rate: 16000,
+            hotwords: stt_hotwords,
         };
 
         let mut provider =
@@ -1107,6 +1115,9 @@ impl PipelineHandle {
             "siliconflow" => "https://api.siliconflow.cn/v1/audio/transcriptions".to_string(),
             "deepgram" => "https://api.deepgram.com/v1/listen".to_string(),
             "assemblyai" => "https://api.assemblyai.com/v2/transcript".to_string(),
+            "qwen-asr" | "dashscope-stream" => {
+                "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation".to_string()
+            }
             _ => {
                 tracing::debug!(
                     "Unknown STT provider '{}', skipping pre-warm",

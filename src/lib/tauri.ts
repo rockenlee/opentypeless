@@ -164,3 +164,22 @@ export async function saveOnboardingCompleted(): Promise<void> {
     console.error('Failed to persist onboarding state:', e)
   }
 }
+
+// Mouse triggers
+export type { MouseTriggerAction } from '../stores/appStore'
+
+export async function updateMouseTriggers(opts: {
+  enabled: boolean
+  middleClickAction: string
+  middleDoubleClickAction: string
+  middleRightAction: string
+  leftMiddleAction: string
+}): Promise<void> {
+  return invoke('update_mouse_triggers', {
+    enabled: opts.enabled,
+    middleClickAction: opts.middleClickAction,
+    middleDoubleClickAction: opts.middleDoubleClickAction,
+    middleRightAction: opts.middleRightAction,
+    leftMiddleAction: opts.leftMiddleAction,
+  })
+}

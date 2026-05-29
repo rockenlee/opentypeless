@@ -1,6 +1,8 @@
 pub mod assemblyai;
 pub mod cloud;
+pub mod dashscope_stream;
 pub mod deepgram;
+pub mod qwen_asr;
 pub mod whisper_compat;
 
 use anyhow::Result;
@@ -15,6 +17,10 @@ pub struct SttConfig {
     pub language: Option<String>,
     pub smart_format: bool,
     pub sample_rate: u32,
+    /// Vocabulary words passed as a `prompt` hint to providers that support it
+    /// (Groq Whisper, OpenAI Whisper). Improves recognition of proper nouns.
+    #[serde(default)]
+    pub hotwords: Vec<String>,
 }
 
 impl Default for SttConfig {
@@ -24,6 +30,7 @@ impl Default for SttConfig {
             language: None,
             smart_format: true,
             sample_rate: 16000,
+            hotwords: Vec::new(),
         }
     }
 }
@@ -69,35 +76,45 @@ pub fn create_provider(
             }
         }
         "assemblyai" => Box::new(assemblyai::AssemblyAiProvider::new()),
+        "dashscope-stream" => Box::new(dashscope_stream::DashscopeStreamProvider::new()),
+        "qwen-asr" => match client {
+            Some(ref c) => Box::new(qwen_asr::QwenAsrProvider::with_client(c.clone())),
+            None => Box::new(qwen_asr::QwenAsrProvider::new()),
+        },
         "glm-asr" => make(WhisperCompatConfig {
             provider_name: "GLM-ASR",
             endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
             model: "glm-asr-2512",
             extra_fields: &[("stream", "false")],
+            supports_prompt: false,
         }),
         "openai-whisper" => make(WhisperCompatConfig {
             provider_name: "OpenAI Whisper",
             endpoint: "https://api.openai.com/v1/audio/transcriptions",
             model: "whisper-1",
             extra_fields: &[],
+            supports_prompt: true,
         }),
         "groq-whisper" => make(WhisperCompatConfig {
             provider_name: "Groq Whisper",
             endpoint: "https://api.groq.com/openai/v1/audio/transcriptions",
             model: "whisper-large-v3-turbo",
             extra_fields: &[],
+            supports_prompt: true,
         }),
         "siliconflow" => make(WhisperCompatConfig {
             provider_name: "SiliconFlow",
             endpoint: "https://api.siliconflow.cn/v1/audio/transcriptions",
             model: "FunAudioLLM/SenseVoiceSmall",
             extra_fields: &[],
+            supports_prompt: false,
         }),
         _ => make(WhisperCompatConfig {
             provider_name: "GLM-ASR",
             endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
             model: "glm-asr-2512",
             extra_fields: &[("stream", "false")],
+            supports_prompt: false,
         }),
     }
 }

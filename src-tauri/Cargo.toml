@@ -34,6 +34,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "process"] 
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 anyhow = "1"
+base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
@@ -43,6 +44,14 @@ http = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 url = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used to synthesise a system media play/pause key event so non-AppleScript
+# media apps (QQ Music, browser tabs, etc.) can be paused on record start.
+objc = "0.2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rdev = "0.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -69,6 +69,22 @@ pub struct AppConfig {
     /// even if they're focused on another app.
     #[serde(default = "default_true")]
     pub agent_notification: bool,
+
+    /// Master switch for middle-mouse-button triggers.
+    #[serde(default)]
+    pub mouse_triggers_enabled: bool,
+    /// Action triggered by a single middle-click. Values: "recording" | "translate" | "agent" | "none".
+    #[serde(default = "default_mouse_middle_click_action")]
+    pub mouse_middle_click_action: String,
+    /// Action triggered by a middle-click double-tap.
+    #[serde(default = "default_mouse_middle_double_click_action")]
+    pub mouse_middle_double_click_action: String,
+    /// Action triggered by middle + right button chord.
+    #[serde(default = "default_mouse_middle_right_action")]
+    pub mouse_middle_right_action: String,
+    /// Action triggered by left + middle button chord.
+    #[serde(default = "default_mouse_left_middle_action")]
+    pub mouse_left_middle_action: String,
 }
 
 fn default_true() -> bool {
@@ -90,6 +106,22 @@ fn default_translate_hotkey() -> String {
     {
         "Ctrl+Shift+.".to_string()
     }
+}
+
+fn default_mouse_middle_click_action() -> String {
+    "recording".to_string()
+}
+
+fn default_mouse_middle_double_click_action() -> String {
+    "agent".to_string()
+}
+
+fn default_mouse_middle_right_action() -> String {
+    "translate".to_string()
+}
+
+fn default_mouse_left_middle_action() -> String {
+    "none".to_string()
 }
 
 fn default_agent_hotkey() -> String {
@@ -131,7 +163,7 @@ impl Default for AppConfig {
             start_minimized: false,
             max_recording_seconds: 30,
             ui_language: "en".to_string(),
-            capsule_auto_hide: false,
+            capsule_auto_hide: true,
             agent_enabled: true,
             agent_preset: default_agent_preset(),
             agent_command: String::new(),
@@ -141,6 +173,11 @@ impl Default for AppConfig {
             agent_hotkey: default_agent_hotkey(),
             auto_pause_media: true,
             agent_notification: true,
+            mouse_triggers_enabled: false,
+            mouse_middle_click_action: default_mouse_middle_click_action(),
+            mouse_middle_double_click_action: default_mouse_middle_double_click_action(),
+            mouse_middle_right_action: default_mouse_middle_right_action(),
+            mouse_left_middle_action: default_mouse_left_middle_action(),
         }
     }
 }

@@ -67,7 +67,7 @@
       "minimumSystemVersion": "10.15",
       "entitlements": "./Entitlements.plist",
       "infoPlist": "./Info.plist",
-      "signingIdentity": "-"
+      "signingIdentity": "Apple Development: rockenlee@gmail.com (TQ9N7L77NM)"
     }
   }
 }

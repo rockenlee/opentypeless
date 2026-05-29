@@ -9,6 +9,8 @@ export type SttProvider =
   | 'openai-whisper'
   | 'groq-whisper'
   | 'siliconflow'
+  | 'dashscope-stream'
+  | 'qwen-asr'
   | 'cloud'
 export type LlmProvider =
   | 'zhipu'
@@ -26,6 +28,7 @@ export type LlmProvider =
 export type OutputMode = 'keyboard' | 'clipboard'
 export type HotkeyMode = 'hold' | 'toggle'
 export type Theme = 'light' | 'dark' | 'system'
+export type MouseTriggerAction = 'recording' | 'translate' | 'agent' | 'confirm' | 'none'
 
 export interface HistoryEntry {
   id: number
@@ -85,6 +88,12 @@ export interface AppConfig {
   auto_pause_media: boolean
   /** Show a native macOS notification when an agent run completes. */
   agent_notification: boolean
+  /** Master switch for middle-mouse-button triggers. */
+  mouse_triggers_enabled: boolean
+  mouse_middle_click_action: MouseTriggerAction
+  mouse_middle_double_click_action: MouseTriggerAction
+  mouse_middle_right_action: MouseTriggerAction
+  mouse_left_middle_action: MouseTriggerAction
 }
 
 export type TestStatus = 'idle' | 'testing' | 'success' | 'error'
@@ -205,7 +214,7 @@ const defaultConfig: AppConfig = {
   start_minimized: false,
   max_recording_seconds: 30,
   ui_language: 'en',
-  capsule_auto_hide: false,
+  capsule_auto_hide: true,
   // Agent integration. Frontend defaults are minimal — the Rust backend
   // resolves the real per-preset binary path at runtime via $HOME-based
   // candidate paths (no hard-coded usernames), so the JS bundle is shareable.
@@ -218,6 +227,11 @@ const defaultConfig: AppConfig = {
   agent_hotkey: isMac ? 'Alt+Shift+/' : 'Ctrl+Shift+/',
   auto_pause_media: true,
   agent_notification: true,
+  mouse_triggers_enabled: false,
+  mouse_middle_click_action: 'recording' as MouseTriggerAction,
+  mouse_middle_double_click_action: 'agent' as MouseTriggerAction,
+  mouse_middle_right_action: 'translate' as MouseTriggerAction,
+  mouse_left_middle_action: 'none' as MouseTriggerAction,
 }
 
 export const useAppStore = create<AppState>((set) => ({

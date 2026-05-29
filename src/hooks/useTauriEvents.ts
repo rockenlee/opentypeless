@@ -122,6 +122,15 @@ export function useTauriEvents() {
       window.location.hash = '#/settings'
     })
 
+    addListener<boolean>('mouse:tap_active', (active) => {
+      if (!active) {
+        toast(
+          '鼠标触发不可用：请在系统设置 → 隐私与安全性 → 辅助功能中删除 OpenTypeless 再重新添加',
+          'error',
+        )
+      }
+    })
+
     return () => {
       cancelled = true
       unlisteners.forEach((unlisten) => unlisten())

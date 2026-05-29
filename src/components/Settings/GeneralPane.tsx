@@ -1,13 +1,54 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../../stores/appStore'
-import type { HotkeyMode, OutputMode } from '../../stores/appStore'
-import { updateHotkey, updateTranslateHotkey, updateAgentHotkey, pauseHotkey, resumeHotkey, checkAccessibilityPermission, requestAccessibilityPermission } from '../../lib/tauri'
+import type { HotkeyMode, OutputMode, MouseTriggerAction } from '../../stores/appStore'
+import { updateHotkey, updateTranslateHotkey, updateAgentHotkey, pauseHotkey, resumeHotkey, checkAccessibilityPermission, requestAccessibilityPermission, updateMouseTriggers } from '../../lib/tauri'
 import { TARGET_LANGUAGES } from '../../lib/constants'
 import { toast } from '../Toast'
 import { SegmentedControl } from './shared/SegmentedControl'
 import { Toggle } from './shared/Toggle'
 import { FormField } from './shared/FormField'
+
+function MouseActionSelect({ value, onChange }: { value: MouseTriggerAction; onChange: (v: MouseTriggerAction) => void }) {
+  const { t } = useTranslation()
+  const options: { value: MouseTriggerAction; label: string }[] = [
+    { value: 'recording', label: t('settings.actionVoiceRecording') },
+    { value: 'translate', label: t('settings.actionToggleTranslate') },
+    { value: 'agent', label: t('settings.actionAgent') },
+    { value: 'confirm', label: t('settings.actionConfirm') },
+    { value: 'none', label: t('settings.actionNone') },
+  ]
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as MouseTriggerAction)}
+      className="px-2 py-1.5 bg-bg-secondary border border-border rounded-[8px] text-[12px] text-text-primary outline-none focus:border-border-focus transition-colors"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  )
+}
+
+function useMouseTriggerSave(config: ReturnType<typeof useAppStore.getState>['config'], updateConfig: ReturnType<typeof useAppStore.getState>['updateConfig']) {
+  const save = async (patch: Partial<typeof config>) => {
+    const next = { ...config, ...patch }
+    updateConfig(patch)
+    try {
+      await updateMouseTriggers({
+        enabled: next.mouse_triggers_enabled,
+        middleClickAction: next.mouse_middle_click_action,
+        middleDoubleClickAction: next.mouse_middle_double_click_action,
+        middleRightAction: next.mouse_middle_right_action,
+        leftMiddleAction: next.mouse_left_middle_action,
+      })
+    } catch (e) {
+      toast.error('Failed to save mouse trigger settings')
+    }
+  }
+  return save
+}
 
 // Map W3C KeyboardEvent.code (physical key, unaffected by Shift / Option /
 // language layout / IME) to the canonical key name that the Rust `parse_hotkey`
@@ -239,6 +280,7 @@ function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
 export function GeneralPane() {
   const config = useAppStore((s) => s.config)
   const updateConfig = useAppStore((s) => s.updateConfig)
+  const saveMouse = useMouseTriggerSave(config, updateConfig)
   const { t } = useTranslation()
   const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
   const [a11yTrusted, setA11yTrusted] = useState<boolean | null>(null)
@@ -313,6 +355,51 @@ export function GeneralPane() {
         <HotkeyRecorder kind="agent" />
       </Section>
 
+      <Section title={t('settings.mouseTrigger')}>
+        <p className="text-[11px] text-text-tertiary mb-3">
+          {t('settings.mouseTriggerDesc')}
+        </p>
+        <div className="flex items-center justify-between mb-3">
+          <Toggle
+            checked={config.mouse_triggers_enabled}
+            onChange={(checked) => saveMouse({ mouse_triggers_enabled: checked })}
+            label={t('settings.enableMouseTriggers')}
+          />
+        </div>
+        {config.mouse_triggers_enabled && (
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-secondary">{t('settings.singleClick')}</span>
+              <MouseActionSelect
+                value={config.mouse_middle_click_action}
+                onChange={(v) => saveMouse({ mouse_middle_click_action: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-secondary">{t('settings.doubleClick')}</span>
+              <MouseActionSelect
+                value={config.mouse_middle_double_click_action}
+                onChange={(v) => saveMouse({ mouse_middle_double_click_action: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-secondary">{t('settings.middlePlusRight')}</span>
+              <MouseActionSelect
+                value={config.mouse_middle_right_action}
+                onChange={(v) => saveMouse({ mouse_middle_right_action: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-secondary">{t('settings.leftPlusMiddle')}</span>
+              <MouseActionSelect
+                value={config.mouse_left_middle_action}
+                onChange={(v) => saveMouse({ mouse_left_middle_action: v })}
+              />
+            </div>
+          </div>
+        )}
+      </Section>
+
       <Section title={t('settings.recordingBehavior')}>
         <div className="space-y-3">
           <Toggle
@@ -345,7 +432,7 @@ export function GeneralPane() {
         />
       </Section>
 
-      {isMac && config.output_mode === 'keyboard' && a11yTrusted !== null && (
+      {isMac && (config.output_mode === 'keyboard' || config.mouse_triggers_enabled) && a11yTrusted !== null && (
         <Section title={t('settings.accessibilityPermission')}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">

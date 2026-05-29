@@ -10,6 +10,8 @@ pub struct WhisperCompatConfig {
     pub model: &'static str,
     /// Extra form text fields (e.g. GLM-ASR needs "stream"="false").
     pub extra_fields: &'static [(&'static str, &'static str)],
+    /// Whether this provider accepts the OpenAI `prompt` field for vocabulary hints.
+    pub supports_prompt: bool,
 }
 
 /// Max audio buffer: ~24 MB PCM ≈ 12.5 min at 16kHz 16-bit mono.
@@ -134,10 +136,21 @@ impl SttProvider for WhisperCompatProvider {
             .text("model", self.provider_config.model.to_string())
             .part("file", file_part);
 
-        // Language hint (OpenAI/Groq support `language` field, others use `prompt`)
+        // Language hint
         if let Some(ref lang) = config.language {
             if lang != "multi" {
                 form = form.text("language", lang.clone());
+            }
+        }
+
+        // Vocabulary hotwords: pass as `prompt` to bias the model toward correct spellings.
+        // Whisper's prompt context window is ~244 tokens. We cap at 40 entries and prefer
+        // entries that contain non-CJK characters (Whisper handles Chinese natively;
+        // the prompt helps most with proper nouns, brand names, and mixed-script terms).
+        if self.provider_config.supports_prompt && !config.hotwords.is_empty() {
+            let prompt = build_whisper_prompt(&config.hotwords);
+            if !prompt.is_empty() {
+                form = form.text("prompt", prompt);
             }
         }
 
@@ -200,4 +213,28 @@ impl SttProvider for WhisperCompatProvider {
     fn name(&self) -> &str {
         self.provider_config.provider_name
     }
+}
+
+/// Build a Whisper-compatible `prompt` string from dictionary hotwords.
+///
+/// Strategy: Whisper's prompt context is ~244 tokens. We prioritise entries that
+/// contain at least one non-CJK character (brand names, English proper nouns,
+/// mixed-script terms) because Whisper handles pure Chinese natively, while
+/// uncommon spellings benefit most from prompting. We cap at 40 entries so the
+/// resulting string stays comfortably within the token budget.
+fn build_whisper_prompt(hotwords: &[String]) -> String {
+    const MAX_ENTRIES: usize = 40;
+
+    // Score: entries with non-CJK chars come first (brand names, abbreviations, etc.)
+    let mut scored: Vec<&str> = hotwords.iter().map(String::as_str).collect();
+    scored.sort_by_key(|w| {
+        let has_non_cjk = w.chars().any(|c| !matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}'));
+        if has_non_cjk { 0usize } else { 1usize }
+    });
+
+    scored
+        .into_iter()
+        .take(MAX_ENTRIES)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

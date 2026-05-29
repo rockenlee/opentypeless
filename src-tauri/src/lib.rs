@@ -48,6 +48,68 @@ struct TranslateHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
 /// of trigger-word prefix. Same comparison rationale as `TranslateHotkeyCache`.
 struct AgentHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
 
+/// Cached mouse trigger settings to avoid disk I/O on every mouse event.
+struct MouseTriggersEnabledCache(Arc<Mutex<bool>>);
+struct MouseMiddleClickActionCache(Arc<Mutex<String>>);
+struct MouseMiddleDoubleClickActionCache(Arc<Mutex<String>>);
+struct MouseMiddleRightActionCache(Arc<Mutex<String>>);
+struct MouseLeftMiddleActionCache(Arc<Mutex<String>>);
+
+/// Platform-agnostic mouse button events forwarded to the gesture state machine.
+#[derive(Debug)]
+enum MouseRawEvent {
+    LeftDown,
+    LeftUp,
+    MiddleDown,
+    MiddleUp,
+    RightDown,
+    RightUp,
+}
+
+// CoreGraphics/CoreFoundation FFI for macOS-native event tap.
+// Only subscribes to mouse button event types — avoids the keyboard/TSM crash
+// that rdev triggers by processing all event types on a background thread.
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CGEventCreateKeyboardEvent(
+        source: *const std::ffi::c_void,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventPost(tap_location: u32, event: *mut std::ffi::c_void);
+    fn CFRelease(cf: *mut std::ffi::c_void);
+    fn CGEventTapCreate(
+        tap: u32,
+        place: u32,
+        options: u32,
+        events_of_interest: u64,
+        callback: unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            u32,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void,
+        user_info: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventTapEnable(tap: *mut std::ffi::c_void, enable: bool);
+    fn CGEventTapIsEnabled(tap: *mut std::ffi::c_void) -> bool;
+    fn CFMachPortCreateRunLoopSource(
+        allocator: *const std::ffi::c_void,
+        port: *mut std::ffi::c_void,
+        order: isize,
+    ) -> *mut std::ffi::c_void;
+    fn CFRunLoopGetCurrent() -> *mut std::ffi::c_void;
+    fn CFRunLoopAddSource(
+        rl: *mut std::ffi::c_void,
+        source: *mut std::ffi::c_void,
+        mode: *const std::ffi::c_void,
+    );
+    fn CFRunLoopRun();
+    static kCFRunLoopCommonModes: *const std::ffi::c_void;
+}
+
 /// Session token for cloud providers. Set by the frontend after Better Auth login.
 /// The Rust pipeline reads this when creating cloud STT/LLM providers.
 pub struct SessionTokenStore(pub Arc<Mutex<String>>);
@@ -285,6 +347,17 @@ async fn test_stt_connection(
             let resp = client
                 .get("https://api.assemblyai.com/v2/transcript?limit=1")
                 .header("Authorization", api_key)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(resp.status().is_success())
+        }
+        "qwen-asr" | "dashscope-stream" => {
+            let client = reqwest::Client::new();
+            let resp = client
+                .get("https://dashscope.aliyuncs.com/compatible-mode/v1/models")
+                .header("Authorization", format!("Bearer {}", api_key))
                 .timeout(std::time::Duration::from_secs(10))
                 .send()
                 .await
@@ -586,6 +659,25 @@ async fn bench_stt_connection(
             let elapsed = t0.elapsed().as_millis() as u32;
             if !resp.status().is_success() {
                 return Err(format!("HTTP {}", resp.status()));
+            }
+            Ok(elapsed)
+        }
+        "qwen-asr" | "dashscope-stream" => {
+            let client = reqwest::Client::new();
+            let t0 = std::time::Instant::now();
+            let resp = client
+                .get("https://dashscope.aliyuncs.com/compatible-mode/v1/models")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let elapsed = t0.elapsed().as_millis() as u32;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let preview: String = body.chars().take(200).collect();
+                return Err(format!("HTTP {}: {}", status, preview));
             }
             Ok(elapsed)
         }
@@ -962,6 +1054,47 @@ async fn resume_hotkey(
     reregister_all_hotkeys(&app, &config)
 }
 
+#[tauri::command]
+async fn update_mouse_triggers(
+    app: tauri::AppHandle,
+    config_state: tauri::State<'_, storage::ConfigManager>,
+    enabled: bool,
+    middle_click_action: String,
+    middle_double_click_action: String,
+    middle_right_action: String,
+    left_middle_action: String,
+) -> Result<(), String> {
+    let mut cfg = config_state.load().await.map_err(|e| e.to_string())?;
+    cfg.mouse_triggers_enabled = enabled;
+    cfg.mouse_middle_click_action = middle_click_action.clone();
+    cfg.mouse_middle_double_click_action = middle_double_click_action.clone();
+    cfg.mouse_middle_right_action = middle_right_action.clone();
+    cfg.mouse_left_middle_action = left_middle_action.clone();
+    config_state.save(&cfg).await.map_err(|e| e.to_string())?;
+
+    // Acquire all five caches simultaneously so a concurrent dispatch_mouse_action
+    // cannot observe a partially-updated set (e.g. enabled=true but stale action).
+    if let (Some(c_en), Some(c_mc), Some(c_mdc), Some(c_mr), Some(c_lm)) = (
+        app.try_state::<MouseTriggersEnabledCache>(),
+        app.try_state::<MouseMiddleClickActionCache>(),
+        app.try_state::<MouseMiddleDoubleClickActionCache>(),
+        app.try_state::<MouseMiddleRightActionCache>(),
+        app.try_state::<MouseLeftMiddleActionCache>(),
+    ) {
+        let mut g_en = c_en.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g_mc = c_mc.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g_mdc = c_mdc.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g_mr = c_mr.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g_lm = c_lm.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g_en = enabled;
+        *g_mc = middle_click_action;
+        *g_mdc = middle_double_click_action;
+        *g_mr = middle_right_action;
+        *g_lm = left_middle_action;
+    }
+    Ok(())
+}
+
 // ─── Hotkey parsing ───
 
 fn default_shortcut() -> Shortcut {
@@ -977,6 +1110,437 @@ fn default_shortcut() -> Shortcut {
         }
     };
     parse_hotkey(&default_hotkey).unwrap_or(fallback)
+}
+
+/// Dispatch an action triggered by a mouse gesture. Reads the action string
+/// from the cached config and calls the appropriate pipeline method.
+async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
+    let enabled = match app_handle.try_state::<MouseTriggersEnabledCache>() {
+        Some(c) => *c.0.lock().unwrap_or_else(|e| e.into_inner()),
+        None => {
+            tracing::warn!("mouse gesture '{}' dropped: trigger cache missing", gesture);
+            return;
+        }
+    };
+    tracing::info!("mouse gesture '{}' received (triggers_enabled={})", gesture, enabled);
+    if !enabled {
+        return;
+    }
+
+    let action = match gesture.as_str() {
+        "middle_single" => match app_handle.try_state::<MouseMiddleClickActionCache>() {
+            Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => return,
+        },
+        "middle_double" => match app_handle.try_state::<MouseMiddleDoubleClickActionCache>() {
+            Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => return,
+        },
+        "middle_right" => match app_handle.try_state::<MouseMiddleRightActionCache>() {
+            Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => return,
+        },
+        "left_middle" => match app_handle.try_state::<MouseLeftMiddleActionCache>() {
+            Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => return,
+        },
+        _ => return,
+    };
+
+    match action.as_str() {
+        "recording" => {
+            let pipeline = app_handle.state::<pipeline::PipelineHandle>();
+            if pipeline.current_state() == pipeline::PipelineState::Idle {
+                if let Err(e) = pipeline.start().await {
+                    tracing::error!("Mouse trigger: start recording failed: {}", e);
+                    let _ = app_handle.emit("pipeline:error", e.to_string());
+                }
+            } else if let Err(e) = pipeline.stop().await {
+                tracing::error!("Mouse trigger: stop recording failed: {}", e);
+                let _ = app_handle.emit("pipeline:error", e.to_string());
+            }
+        }
+        "translate" => {
+            let config_state = app_handle.state::<storage::ConfigManager>();
+            let mut cfg = match config_state.load().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Mouse trigger: failed to load config: {}", e);
+                    return;
+                }
+            };
+            cfg.translate_enabled = !cfg.translate_enabled;
+            let new_state = cfg.translate_enabled;
+            let target_lang = cfg.target_lang.clone();
+            if let Err(e) = config_state.save(&cfg).await {
+                tracing::error!("Mouse trigger: failed to save config: {}", e);
+                return;
+            }
+            let _ = app_handle.emit(
+                "translate:toggled",
+                serde_json::json!({ "enabled": new_state, "target_lang": target_lang }),
+            );
+        }
+        "agent" => {
+            let pipeline = app_handle.state::<pipeline::PipelineHandle>();
+            if pipeline.current_state() == pipeline::PipelineState::Idle {
+                if let Err(e) = pipeline.start_for_agent().await {
+                    tracing::error!("Mouse trigger: agent start failed: {}", e);
+                    let _ = app_handle.emit("pipeline:error", e.to_string());
+                }
+            } else if let Err(e) = pipeline.stop().await {
+                tracing::error!("Mouse trigger: agent stop failed: {}", e);
+                let _ = app_handle.emit("pipeline:error", e.to_string());
+            }
+        }
+        "confirm" => {
+            // Simulate a Return key press+release at the HID level so the
+            // frontmost app receives it as if the user pressed Enter.
+            #[cfg(target_os = "macos")]
+            unsafe {
+                const K_VK_RETURN: u16 = 36;
+                let ev_down = CGEventCreateKeyboardEvent(std::ptr::null(), K_VK_RETURN, true);
+                if !ev_down.is_null() {
+                    CGEventPost(0, ev_down); // kCGHIDEventTap
+                    CFRelease(ev_down);
+                }
+                let ev_up = CGEventCreateKeyboardEvent(std::ptr::null(), K_VK_RETURN, false);
+                if !ev_up.is_null() {
+                    CGEventPost(0, ev_up);
+                    CFRelease(ev_up);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = rdev::simulate(&rdev::EventType::KeyPress(rdev::Key::Return));
+                let _ = rdev::simulate(&rdev::EventType::KeyRelease(rdev::Key::Return));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// State machine that processes raw mouse events and dispatches gesture actions.
+/// Runs in a dedicated tokio task fed by a platform-specific listener.
+async fn mouse_event_loop(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<MouseRawEvent>,
+    app_handle: tauri::AppHandle,
+) {
+    let double_click_window = tokio::time::Duration::from_millis(300);
+
+    let mut left_down = false;
+    let mut middle_down = false;
+    let mut right_down = false;
+    let mut click_count: u8 = 0;
+    let mut chord_dispatched = false; // prevent a chord from also counting as a click
+    let mut deadline: Option<tokio::time::Instant> = None;
+
+    loop {
+        let timeout_fut = async {
+            match deadline {
+                Some(d) => tokio::time::sleep_until(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+
+        tokio::select! {
+            biased;
+
+            maybe_event = rx.recv() => {
+                let event = match maybe_event {
+                    Some(e) => e,
+                    None => break, // channel closed
+                };
+                match event {
+                    MouseRawEvent::LeftDown => {
+                        left_down = true;
+                        if middle_down {
+                            // Left+Middle chord — cancel pending click, fire immediately
+                            click_count = 0;
+                            deadline = None;
+                            chord_dispatched = true;
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("left_middle".to_owned(), h));
+                        }
+                    }
+                    MouseRawEvent::LeftUp => {
+                        left_down = false;
+                    }
+                    MouseRawEvent::MiddleDown => {
+                        middle_down = true;
+                        if right_down {
+                            // Middle+Right chord
+                            click_count = 0;
+                            deadline = None;
+                            chord_dispatched = true;
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("middle_right".to_owned(), h));
+                        } else if left_down {
+                            // Left+Middle chord
+                            click_count = 0;
+                            deadline = None;
+                            chord_dispatched = true;
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("left_middle".to_owned(), h));
+                        }
+                    }
+                    MouseRawEvent::MiddleUp => {
+                        middle_down = false;
+                        if chord_dispatched {
+                            chord_dispatched = false;
+                            continue;
+                        }
+                        click_count += 1;
+                        deadline = Some(tokio::time::Instant::now() + double_click_window);
+                    }
+                    MouseRawEvent::RightDown => {
+                        right_down = true;
+                        if middle_down {
+                            click_count = 0;
+                            deadline = None;
+                            chord_dispatched = true;
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("middle_right".to_owned(), h));
+                        }
+                    }
+                    MouseRawEvent::RightUp => {
+                        right_down = false;
+                    }
+                }
+            }
+
+            _ = timeout_fut, if deadline.is_some() => {
+                let gesture = if click_count >= 2 { "middle_double" } else { "middle_single" };
+                let h = app_handle.clone();
+                tauri::async_runtime::spawn(dispatch_mouse_action(gesture.to_owned(), h));
+                click_count = 0;
+                deadline = None;
+            }
+        }
+    }
+}
+
+/// macOS: use CGEventTap to listen for mouse button events.
+/// Subscribes only to other-mouse (middle) and right-mouse button types,
+/// so the keyboard/TSM code path in rdev is never triggered.
+#[cfg(target_os = "macos")]
+fn start_mouse_listener(app_handle: tauri::AppHandle) {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::OnceLock;
+
+    static SENDER: OnceLock<tokio::sync::mpsc::UnboundedSender<MouseRawEvent>> = OnceLock::new();
+    // Holds the live tap port so the callback can re-enable the tap if macOS
+    // disables it (see kCGEventTapDisabledBy* handling below). NOT cleared on
+    // teardown — the listener thread runs for the whole process lifetime.
+    static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    // macOS disables an event tap (and notifies the callback with one of these
+    // event types) if the callback is too slow, or across sleep/wake, fast user
+    // switch, or heavy load. The tap then stays dead until explicitly
+    // re-enabled — which is the "mouse works for a while, then silently stops"
+    // bug. We catch these and call CGEventTapEnable(tap, true) to revive it.
+    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+
+    // kCGSessionEventTap=1, kCGHeadInsertEventTap=0, kCGEventTapOptionListenOnly=1
+    // Mask: kCGEventLeftMouseDown(1) | kCGEventLeftMouseUp(2)
+    //     | kCGEventRightMouseDown(3) | kCGEventRightMouseUp(4)
+    //     | kCGEventOtherMouseDown(25) | kCGEventOtherMouseUp(26)
+    const MOUSE_MASK: u64 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 25) | (1 << 26);
+
+    unsafe extern "C" fn tap_callback(
+        _proxy: *mut c_void,
+        event_type: u32,
+        event: *mut c_void,
+        _info: *mut c_void,
+    ) -> *mut c_void {
+        // The OS disabled our tap — revive it so global mouse triggers keep
+        // working instead of silently dying for the rest of the session.
+        if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT
+            || event_type == K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
+        {
+            let tap = TAP_PORT.load(Ordering::Acquire);
+            if !tap.is_null() {
+                CGEventTapEnable(tap, true);
+                tracing::warn!(
+                    "Mouse tap was disabled by macOS (type={:#x}); re-enabled it",
+                    event_type
+                );
+            }
+            return event;
+        }
+        let raw = match event_type {
+            1 => Some(MouseRawEvent::LeftDown),
+            2 => Some(MouseRawEvent::LeftUp),
+            3 => Some(MouseRawEvent::RightDown),
+            4 => Some(MouseRawEvent::RightUp),
+            25 => Some(MouseRawEvent::MiddleDown),
+            26 => Some(MouseRawEvent::MiddleUp),
+            _ => None,
+        };
+        if let Some(ev) = raw {
+            if let Some(tx) = SENDER.get() {
+                let _ = tx.send(ev);
+            }
+        }
+        event
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MouseRawEvent>();
+    if SENDER.set(tx).is_err() {
+        // rx is dropped here — the existing event loop keeps running with the
+        // original app_handle. Calling this function more than once is a bug:
+        // the new app_handle is silently discarded.
+        tracing::error!(
+            "start_mouse_listener called more than once; new app_handle discarded. \
+             Mouse triggers remain bound to the original handle."
+        );
+        return;
+    }
+
+    // Channel to report tap creation success/failure back to the tokio task.
+    let (tap_tx, tap_rx) = std::sync::mpsc::channel::<bool>();
+
+    std::thread::spawn(move || unsafe {
+        // Ground truth: does this process actually hold the Accessibility grant?
+        // A global CGEventTap is silently dead without it — CGEventTapCreate can
+        // still return a non-NULL port at HID level, but the tap is created
+        // *disabled* and never receives events from other apps. So we log the
+        // trust state explicitly instead of inferring it from a non-NULL tap.
+        let trusted = crate::pipeline::is_accessibility_trusted();
+        if trusted {
+            tracing::info!("AXIsProcessTrusted = true (global mouse events allowed)");
+        } else {
+            tracing::error!(
+                "AXIsProcessTrusted = FALSE — OpenTypeless lacks Accessibility. \
+                 Middle-click will only fire when OpenTypeless itself is focused. \
+                 Grant it in System Settings → Privacy & Security → Accessibility."
+            );
+        }
+
+        // Try kCGHIDEventTap (0) first — hardware level, most reliable when
+        // Accessibility is granted. Falls back to kCGSessionEventTap (1) if
+        // the HID tap can't be created (e.g. no Accessibility on this build).
+        let mut level = 0u32; // kCGHIDEventTap
+        let tap = CGEventTapCreate(
+            0, // kCGHIDEventTap — hardware level (requires Accessibility)
+            0, // kCGHeadInsertEventTap
+            1, // kCGEventTapOptionListenOnly
+            MOUSE_MASK,
+            tap_callback,
+            std::ptr::null_mut(),
+        );
+        let tap = if tap.is_null() {
+            tracing::warn!("CGEventTapCreate HID-level failed, retrying at session level");
+            level = 1; // kCGSessionEventTap
+            CGEventTapCreate(
+                1, // kCGSessionEventTap
+                0, // kCGHeadInsertEventTap
+                1, // kCGEventTapOptionListenOnly
+                MOUSE_MASK,
+                tap_callback,
+                std::ptr::null_mut(),
+            )
+        } else {
+            tap
+        };
+        if tap.is_null() {
+            tracing::error!("CGEventTapCreate failed — check Accessibility permission");
+            let _ = tap_tx.send(false);
+            return;
+        }
+        // Publish the port so tap_callback can re-enable the tap if the OS
+        // disables it (timeout / user-input / sleep-wake).
+        TAP_PORT.store(tap, Ordering::Release);
+        let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+        if source.is_null() {
+            tracing::error!("CFMachPortCreateRunLoopSource returned null");
+            let _ = tap_tx.send(false);
+            return;
+        }
+        let enabled = CGEventTapIsEnabled(tap);
+        tracing::info!(
+            "CGEventTapCreate succeeded (level={}, enabled={}, trusted={})",
+            if level == 0 { "HID" } else { "session" },
+            enabled,
+            trusted
+        );
+        // A tap that is created but not enabled, or created without trust, will
+        // not deliver global events — surface that as a failure to the frontend.
+        let _ = tap_tx.send(trusted && enabled);
+        let rl = CFRunLoopGetCurrent();
+        CFRunLoopAddSource(rl, source, kCFRunLoopCommonModes);
+        CGEventTapEnable(tap, true);
+        CFRunLoopRun();
+    });
+
+    tauri::async_runtime::spawn(async move {
+        // Give the background thread up to 2s to report tap status, then emit to frontend.
+        let tap_ok = tokio::task::spawn_blocking(move || {
+            tap_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+
+        let _ = app_handle.emit("mouse:tap_active", tap_ok);
+        if !tap_ok {
+            tracing::warn!("Mouse tap inactive — emitting warning to frontend");
+        }
+
+        mouse_event_loop(rx, app_handle).await;
+    });
+}
+
+/// Non-macOS: use rdev for global mouse event listening.
+#[cfg(not(target_os = "macos"))]
+fn start_mouse_listener(app_handle: tauri::AppHandle) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MouseRawEvent>();
+    let (tap_tx, tap_rx) = std::sync::mpsc::channel::<bool>();
+
+    std::thread::spawn(move || {
+        if let Err(e) = rdev::listen(move |event| {
+            let raw = match event.event_type {
+                rdev::EventType::ButtonPress(rdev::Button::Left) => Some(MouseRawEvent::LeftDown),
+                rdev::EventType::ButtonRelease(rdev::Button::Left) => Some(MouseRawEvent::LeftUp),
+                rdev::EventType::ButtonPress(rdev::Button::Middle) => Some(MouseRawEvent::MiddleDown),
+                rdev::EventType::ButtonRelease(rdev::Button::Middle) => Some(MouseRawEvent::MiddleUp),
+                rdev::EventType::ButtonPress(rdev::Button::Right) => Some(MouseRawEvent::RightDown),
+                rdev::EventType::ButtonRelease(rdev::Button::Right) => Some(MouseRawEvent::RightUp),
+                _ => None,
+            };
+            if let Some(ev) = raw {
+                let _ = tx.send(ev);
+            }
+        }) {
+            tracing::error!("rdev mouse listener error: {:?}", e);
+            // rdev::listen only returns on failure; signal the frontend so the
+            // user sees the same "mouse tap inactive" warning as on macOS.
+            let _ = tap_tx.send(false);
+        }
+        // rdev::listen blocks indefinitely on success; tap_tx is dropped when
+        // the thread exits (on error), so recv_timeout below returns Err and
+        // we fall through to assume success after 1 s.
+    });
+
+    tauri::async_runtime::spawn(async move {
+        // Wait up to 1 s for a failure signal from the rdev thread.
+        // No signal within 1 s means rdev started successfully.
+        let tap_ok = tokio::task::spawn_blocking(move || {
+            tap_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap_or(true)
+        })
+        .await
+        .unwrap_or(true);
+
+        let _ = app_handle.emit("mouse:tap_active", tap_ok);
+        if !tap_ok {
+            tracing::warn!("Mouse tap inactive — emitting warning to frontend");
+        }
+
+        mouse_event_loop(rx, app_handle).await;
+    });
 }
 
 fn build_shortcut_handler(
@@ -1418,6 +1982,22 @@ pub fn run() {
             app.manage(TranslateHotkeyCache(Arc::new(Mutex::new(translate_signature))));
             app.manage(AgentHotkeyCache(Arc::new(Mutex::new(agent_signature))));
             app.manage(SessionTokenStore(Arc::new(Mutex::new(String::new()))));
+            app.manage(MouseTriggersEnabledCache(Arc::new(Mutex::new(
+                initial_config.mouse_triggers_enabled,
+            ))));
+            app.manage(MouseMiddleClickActionCache(Arc::new(Mutex::new(
+                initial_config.mouse_middle_click_action.clone(),
+            ))));
+            app.manage(MouseMiddleDoubleClickActionCache(Arc::new(Mutex::new(
+                initial_config.mouse_middle_double_click_action.clone(),
+            ))));
+            app.manage(MouseMiddleRightActionCache(Arc::new(Mutex::new(
+                initial_config.mouse_middle_right_action.clone(),
+            ))));
+            app.manage(MouseLeftMiddleActionCache(Arc::new(Mutex::new(
+                initial_config.mouse_left_middle_action.clone(),
+            ))));
+            start_mouse_listener(app_handle.clone());
 
             // Sync auto-start state with system
             {
@@ -1674,6 +2254,7 @@ pub fn run() {
             update_hotkey,
             update_translate_hotkey,
             update_agent_hotkey,
+            update_mouse_triggers,
             pause_hotkey,
             resume_hotkey,
             set_auto_start,

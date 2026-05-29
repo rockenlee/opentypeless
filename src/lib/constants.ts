@@ -31,6 +31,8 @@ export const STT_PROVIDERS = [
   { value: 'openai-whisper', label: 'OpenAI Whisper' },
   { value: 'groq-whisper', label: 'Groq Whisper' },
   { value: 'siliconflow', label: 'SiliconFlow (硅基流动)' },
+  { value: 'dashscope-stream', label: 'DashScope 实时转写 (阿里百炼)' },
+  { value: 'qwen-asr', label: 'Qwen3-ASR-Flash 批处理 (阿里百炼)' },
   { value: 'cloud', label: 'OpenTypeless Cloud' },
 ] as const
 
