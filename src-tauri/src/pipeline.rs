@@ -213,20 +213,17 @@ impl PipelineHandle {
         self.state.store(new_state.as_u8(), Ordering::SeqCst);
         let _ = self.app_handle.emit("pipeline:state", new_state);
 
-        // Update tray tooltip + menu to reflect pipeline state
-        if let Some(tray_handle) = self.app_handle.try_state::<crate::TrayHandle>() {
-            let tooltip = match new_state {
-                PipelineState::Recording => "OpenTypeless - Recording...",
-                PipelineState::Transcribing => "OpenTypeless - Transcribing...",
-                PipelineState::Polishing => "OpenTypeless - Polishing...",
-                PipelineState::Outputting => "OpenTypeless - Outputting...",
-                PipelineState::Idle => "OpenTypeless",
-            };
-            if let Ok(t) = tray_handle.tray.lock() {
-                let _ = t.set_tooltip(Some(tooltip));
-            }
-        }
-        crate::refresh_tray(&self.app_handle);
+        // Update tray tooltip + menu to reflect pipeline state. Dispatched onto
+        // the main thread (never locking `tray` from this worker thread) — see
+        // crate::update_tray for the deadlock this avoids.
+        let tooltip = match new_state {
+            PipelineState::Recording => "OpenTypeless - Recording...",
+            PipelineState::Transcribing => "OpenTypeless - Transcribing...",
+            PipelineState::Polishing => "OpenTypeless - Polishing...",
+            PipelineState::Outputting => "OpenTypeless - Outputting...",
+            PipelineState::Idle => "OpenTypeless",
+        };
+        crate::update_tray(&self.app_handle, Some(tooltip.to_string()));
     }
 
     pub fn current_state(&self) -> PipelineState {
@@ -376,13 +373,11 @@ impl PipelineHandle {
         let _ = self
             .app_handle
             .emit("pipeline:state", PipelineState::Recording);
-        // Update tray for recording state
-        if let Some(tray_handle) = self.app_handle.try_state::<crate::TrayHandle>() {
-            if let Ok(t) = tray_handle.tray.lock() {
-                let _ = t.set_tooltip(Some("OpenTypeless - Recording..."));
-            }
-        }
-        crate::refresh_tray(&self.app_handle);
+        // Update tray for recording state (dispatched to the main thread).
+        crate::update_tray(
+            &self.app_handle,
+            Some("OpenTypeless - Recording...".to_string()),
+        );
 
         // Clear accumulated text
         self.accumulated_text
@@ -669,13 +664,11 @@ impl PipelineHandle {
         let _ = self
             .app_handle
             .emit("pipeline:state", PipelineState::Transcribing);
-        // Update tray for transcribing state
-        if let Some(tray_handle) = self.app_handle.try_state::<crate::TrayHandle>() {
-            if let Ok(t) = tray_handle.tray.lock() {
-                let _ = t.set_tooltip(Some("OpenTypeless - Transcribing..."));
-            }
-        }
-        crate::refresh_tray(&self.app_handle);
+        // Update tray for transcribing state (dispatched to the main thread).
+        crate::update_tray(
+            &self.app_handle,
+            Some("OpenTypeless - Transcribing...".to_string()),
+        );
 
         let stop_start = std::time::Instant::now();
 

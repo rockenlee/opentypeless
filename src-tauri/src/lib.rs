@@ -80,34 +80,10 @@ extern "C" {
     ) -> *mut std::ffi::c_void;
     fn CGEventPost(tap_location: u32, event: *mut std::ffi::c_void);
     fn CFRelease(cf: *mut std::ffi::c_void);
-    fn CGEventTapCreate(
-        tap: u32,
-        place: u32,
-        options: u32,
-        events_of_interest: u64,
-        callback: unsafe extern "C" fn(
-            *mut std::ffi::c_void,
-            u32,
-            *mut std::ffi::c_void,
-            *mut std::ffi::c_void,
-        ) -> *mut std::ffi::c_void,
-        user_info: *mut std::ffi::c_void,
-    ) -> *mut std::ffi::c_void;
-    fn CGEventTapEnable(tap: *mut std::ffi::c_void, enable: bool);
-    fn CGEventTapIsEnabled(tap: *mut std::ffi::c_void) -> bool;
-    fn CFMachPortCreateRunLoopSource(
-        allocator: *const std::ffi::c_void,
-        port: *mut std::ffi::c_void,
-        order: isize,
-    ) -> *mut std::ffi::c_void;
-    fn CFRunLoopGetCurrent() -> *mut std::ffi::c_void;
-    fn CFRunLoopAddSource(
-        rl: *mut std::ffi::c_void,
-        source: *mut std::ffi::c_void,
-        mode: *const std::ffi::c_void,
-    );
-    fn CFRunLoopRun();
-    static kCFRunLoopCommonModes: *const std::ffi::c_void;
+    // Reads the current pressed state of a mouse button without installing an
+    // event tap — needs no Accessibility grant for mouse buttons, and leaves
+    // nothing for the OS to disable. Used by the polling mouse listener.
+    fn CGEventSourceButtonState(state_id: u32, button: u32) -> bool;
 }
 
 /// Session token for cloud providers. Set by the frontend after Better Auth login.
@@ -182,24 +158,44 @@ fn build_tray_menu(
     Ok(menu)
 }
 
-/// Rebuild the tray menu and update tooltip based on pipeline state.
-pub fn refresh_tray(app: &tauri::AppHandle) {
-    let is_recording = app
-        .try_state::<pipeline::PipelineHandle>()
-        .map(|p| p.current_state() == pipeline::PipelineState::Recording)
-        .unwrap_or(false);
-    let window_visible = app
-        .get_webview_window("main")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
+/// Update the tray tooltip (when `tooltip` is `Some`) and rebuild its menu —
+/// always on the main thread.
+///
+/// Tray (NSStatusItem) mutations are main-thread-only and dispatch
+/// *synchronously*. Doing them from a worker thread while holding the `tray`
+/// lock deadlocks: the worker blocks inside the sync dispatch while holding
+/// `tray`, and the main thread (which also locks `tray`, e.g. from its tray-menu
+/// event handlers) blocks trying to acquire it. `run_on_main_thread` returns
+/// immediately, so `tray` is only ever locked on the main thread and the two can
+/// never deadlock.
+pub fn update_tray(app: &tauri::AppHandle, tooltip: Option<String>) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let is_recording = app_handle
+            .try_state::<pipeline::PipelineHandle>()
+            .map(|p| p.current_state() == pipeline::PipelineState::Recording)
+            .unwrap_or(false);
+        let window_visible = app_handle
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
 
-    if let Some(tray_handle) = app.try_state::<TrayHandle>() {
-        if let Ok(tray) = tray_handle.tray.lock() {
-            if let Ok(menu) = build_tray_menu(app, is_recording, window_visible) {
-                let _ = tray.set_menu(Some(menu));
+        if let Some(tray_handle) = app_handle.try_state::<TrayHandle>() {
+            if let Ok(tray) = tray_handle.tray.lock() {
+                if let Some(tip) = tooltip.as_deref() {
+                    let _ = tray.set_tooltip(Some(tip));
+                }
+                if let Ok(menu) = build_tray_menu(&app_handle, is_recording, window_visible) {
+                    let _ = tray.set_menu(Some(menu));
+                }
             }
         }
-    }
+    });
+}
+
+/// Rebuild the tray menu based on current pipeline/window state.
+pub fn refresh_tray(app: &tauri::AppHandle) {
+    update_tray(app, None);
 }
 
 #[tauri::command]
@@ -1326,72 +1322,15 @@ async fn mouse_event_loop(
     }
 }
 
-/// macOS: use CGEventTap to listen for mouse button events.
-/// Subscribes only to other-mouse (middle) and right-mouse button types,
-/// so the keyboard/TSM code path in rdev is never triggered.
+/// macOS: drive the global mouse triggers by polling physical mouse-button
+/// state (CGEventSourceButtonState) at ~125 Hz. Unlike a CGEventTap this needs
+/// no Accessibility grant and there is no tap for the OS to disable — which is
+/// what made the previous tap-based listener die a few seconds after launch.
 #[cfg(target_os = "macos")]
 fn start_mouse_listener(app_handle: tauri::AppHandle) {
-    use std::ffi::c_void;
-    use std::sync::atomic::{AtomicPtr, Ordering};
     use std::sync::OnceLock;
 
     static SENDER: OnceLock<tokio::sync::mpsc::UnboundedSender<MouseRawEvent>> = OnceLock::new();
-    // Holds the live tap port so the callback can re-enable the tap if macOS
-    // disables it (see kCGEventTapDisabledBy* handling below). NOT cleared on
-    // teardown — the listener thread runs for the whole process lifetime.
-    static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
-    // macOS disables an event tap (and notifies the callback with one of these
-    // event types) if the callback is too slow, or across sleep/wake, fast user
-    // switch, or heavy load. The tap then stays dead until explicitly
-    // re-enabled — which is the "mouse works for a while, then silently stops"
-    // bug. We catch these and call CGEventTapEnable(tap, true) to revive it.
-    const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
-    const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
-
-    // kCGSessionEventTap=1, kCGHeadInsertEventTap=0, kCGEventTapOptionListenOnly=1
-    // Mask: kCGEventLeftMouseDown(1) | kCGEventLeftMouseUp(2)
-    //     | kCGEventRightMouseDown(3) | kCGEventRightMouseUp(4)
-    //     | kCGEventOtherMouseDown(25) | kCGEventOtherMouseUp(26)
-    const MOUSE_MASK: u64 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 25) | (1 << 26);
-
-    unsafe extern "C" fn tap_callback(
-        _proxy: *mut c_void,
-        event_type: u32,
-        event: *mut c_void,
-        _info: *mut c_void,
-    ) -> *mut c_void {
-        // The OS disabled our tap — revive it so global mouse triggers keep
-        // working instead of silently dying for the rest of the session.
-        if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT
-            || event_type == K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT
-        {
-            let tap = TAP_PORT.load(Ordering::Acquire);
-            if !tap.is_null() {
-                CGEventTapEnable(tap, true);
-                tracing::warn!(
-                    "Mouse tap was disabled by macOS (type={:#x}); re-enabled it",
-                    event_type
-                );
-            }
-            return event;
-        }
-        let raw = match event_type {
-            1 => Some(MouseRawEvent::LeftDown),
-            2 => Some(MouseRawEvent::LeftUp),
-            3 => Some(MouseRawEvent::RightDown),
-            4 => Some(MouseRawEvent::RightUp),
-            25 => Some(MouseRawEvent::MiddleDown),
-            26 => Some(MouseRawEvent::MiddleUp),
-            _ => None,
-        };
-        if let Some(ev) = raw {
-            if let Some(tx) = SENDER.get() {
-                let _ = tx.send(ev);
-            }
-        }
-        event
-    }
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MouseRawEvent>();
     if SENDER.set(tx).is_err() {
@@ -1409,76 +1348,62 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
     let (tap_tx, tap_rx) = std::sync::mpsc::channel::<bool>();
 
     std::thread::spawn(move || unsafe {
-        // Ground truth: does this process actually hold the Accessibility grant?
-        // A global CGEventTap is silently dead without it — CGEventTapCreate can
-        // still return a non-NULL port at HID level, but the tap is created
-        // *disabled* and never receives events from other apps. So we log the
-        // trust state explicitly instead of inferring it from a non-NULL tap.
-        let trusted = crate::pipeline::is_accessibility_trusted();
-        if trusted {
-            tracing::info!("AXIsProcessTrusted = true (global mouse events allowed)");
-        } else {
-            tracing::error!(
-                "AXIsProcessTrusted = FALSE — OpenTypeless lacks Accessibility. \
-                 Middle-click will only fire when OpenTypeless itself is focused. \
-                 Grant it in System Settings → Privacy & Security → Accessibility."
+        // Poll physical mouse-button state instead of installing a CGEventTap.
+        //
+        // A global tap at kCGHIDEventTap level requires Accessibility trust, and
+        // on this Apple-Development-signed build macOS revokes that trust a few
+        // seconds after a Finder launch — silently disabling the tap (the disable
+        // event is never even delivered to the callback) with no way to revive
+        // it (re-enabling from the callback, a runloop timer, and a watchdog
+        // thread were all verified to fail). CGEventSourceButtonState merely
+        // *reads* the current button state: it installs no tap, so there is
+        // nothing for the OS to disable, and for mouse buttons it needs no
+        // Accessibility grant. We sample at ~125 Hz and feed edge transitions
+        // into the same channel the gesture state machine already consumes.
+        //
+        // (Typing the result into other apps still needs Accessibility — that is
+        // surfaced separately by the pipeline, not by this listener.)
+        const SOURCE_STATE: u32 = 0; // kCGEventSourceStateCombinedSessionState
+        // CGMouseButton: left = 0, right = 1, center (middle) = 2
+        let (mut left, mut middle, mut right) = (false, false, false);
+        tracing::info!("Mouse trigger poller started (CGEventSourceButtonState)");
+        // No tap, no permission gate — the poller is always live.
+        let _ = tap_tx.send(true);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            let (nl, nm, nr) = (
+                CGEventSourceButtonState(SOURCE_STATE, 0),
+                CGEventSourceButtonState(SOURCE_STATE, 2),
+                CGEventSourceButtonState(SOURCE_STATE, 1),
             );
+            let tx = match SENDER.get() {
+                Some(t) => t,
+                None => continue,
+            };
+            // Emit left/right edges before middle so chord detection in
+            // mouse_event_loop sees the modifier button already pressed.
+            if nl && !left {
+                let _ = tx.send(MouseRawEvent::LeftDown);
+            }
+            if nr && !right {
+                let _ = tx.send(MouseRawEvent::RightDown);
+            }
+            if nm && !middle {
+                let _ = tx.send(MouseRawEvent::MiddleDown);
+            }
+            if !nm && middle {
+                let _ = tx.send(MouseRawEvent::MiddleUp);
+            }
+            if !nl && left {
+                let _ = tx.send(MouseRawEvent::LeftUp);
+            }
+            if !nr && right {
+                let _ = tx.send(MouseRawEvent::RightUp);
+            }
+            left = nl;
+            middle = nm;
+            right = nr;
         }
-
-        // Try kCGHIDEventTap (0) first — hardware level, most reliable when
-        // Accessibility is granted. Falls back to kCGSessionEventTap (1) if
-        // the HID tap can't be created (e.g. no Accessibility on this build).
-        let mut level = 0u32; // kCGHIDEventTap
-        let tap = CGEventTapCreate(
-            0, // kCGHIDEventTap — hardware level (requires Accessibility)
-            0, // kCGHeadInsertEventTap
-            1, // kCGEventTapOptionListenOnly
-            MOUSE_MASK,
-            tap_callback,
-            std::ptr::null_mut(),
-        );
-        let tap = if tap.is_null() {
-            tracing::warn!("CGEventTapCreate HID-level failed, retrying at session level");
-            level = 1; // kCGSessionEventTap
-            CGEventTapCreate(
-                1, // kCGSessionEventTap
-                0, // kCGHeadInsertEventTap
-                1, // kCGEventTapOptionListenOnly
-                MOUSE_MASK,
-                tap_callback,
-                std::ptr::null_mut(),
-            )
-        } else {
-            tap
-        };
-        if tap.is_null() {
-            tracing::error!("CGEventTapCreate failed — check Accessibility permission");
-            let _ = tap_tx.send(false);
-            return;
-        }
-        // Publish the port so tap_callback can re-enable the tap if the OS
-        // disables it (timeout / user-input / sleep-wake).
-        TAP_PORT.store(tap, Ordering::Release);
-        let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-        if source.is_null() {
-            tracing::error!("CFMachPortCreateRunLoopSource returned null");
-            let _ = tap_tx.send(false);
-            return;
-        }
-        let enabled = CGEventTapIsEnabled(tap);
-        tracing::info!(
-            "CGEventTapCreate succeeded (level={}, enabled={}, trusted={})",
-            if level == 0 { "HID" } else { "session" },
-            enabled,
-            trusted
-        );
-        // A tap that is created but not enabled, or created without trust, will
-        // not deliver global events — surface that as a failure to the frontend.
-        let _ = tap_tx.send(trusted && enabled);
-        let rl = CFRunLoopGetCurrent();
-        CFRunLoopAddSource(rl, source, kCFRunLoopCommonModes);
-        CGEventTapEnable(tap, true);
-        CFRunLoopRun();
     });
 
     tauri::async_runtime::spawn(async move {
