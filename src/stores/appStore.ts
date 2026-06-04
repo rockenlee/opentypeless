@@ -215,7 +215,7 @@ const defaultConfig: AppConfig = {
   auto_start: false,
   close_to_tray: true,
   start_minimized: false,
-  max_recording_seconds: 30,
+  max_recording_seconds: 180,
   ui_language: 'en',
   capsule_auto_hide: true,
   preferred_input_device: '',
