@@ -14,8 +14,10 @@
 
 > ⚠️ 本应用未经 Apple 公证（个人/小团队使用，未加入 $99/年的 Developer Program）。第一次启动会被 Gatekeeper 拦：
 >
-> - **方法 A**：在 Finder 里**右键** `OpenTypeless.app` → 选「打开」→ 弹窗里**再点一次「打开」**
-> - **方法 B（更彻底）**：终端跑一次 `xattr -dr com.apple.quarantine /Applications/OpenTypeless.app`，之后双击就能正常打开
+> - **方法 A（最省事，推荐）**：终端跑一次 `xattr -dr com.apple.quarantine /Applications/OpenTypeless.app`，之后双击即可正常打开。
+> - **方法 B**：先双击一次（会被拦下），然后到 **系统设置 → 隐私与安全性**，往下滚动找到「已阻止使用 “OpenTypeless”…」→ 点 **「仍要打开 / Open Anyway」**。
+>
+> （macOS 15 / 26 上旧的“右键 → 打开”往往不再出现，以上面两种为准。）
 
 ### 2. 必须授予的系统权限
 
@@ -74,8 +76,10 @@ App 启动时如果检测到没授权，会在主窗口顶部弹**琥珀色横�
 
 > ⚠️ This build is **not notarized by Apple** (we are not on Apple's $99/year Developer Program). First launch will be blocked by Gatekeeper:
 >
-> - **Option A**: In Finder, **right-click** `OpenTypeless.app` → "Open" → click "Open" again in the confirmation dialog.
-> - **Option B** (cleaner): Run `xattr -dr com.apple.quarantine /Applications/OpenTypeless.app` in Terminal, then double-click normally.
+> - **Option A (easiest, recommended)**: Run `xattr -dr com.apple.quarantine /Applications/OpenTypeless.app` in Terminal, then double-click normally.
+> - **Option B**: Double-click once (it gets blocked), then go to **System Settings → Privacy & Security**, scroll down to "OpenTypeless was blocked…" → click **"Open Anyway"**.
+>
+> (On macOS 15 / 26 the old right-click → Open usually no longer appears; use one of the two above.)
 
 ### 2. Required system permissions
 
