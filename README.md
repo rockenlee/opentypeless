@@ -61,8 +61,14 @@
 ## Features
 
 - 🎙️ Global hotkey recording — hold-to-record or toggle mode
+- 🖱️ Global mouse triggers — middle-click to record, double-click to confirm, or button chords (left+middle, middle+right) mapped to translate / agent; works in any app, even when OpenTypeless isn't focused
+- 🤖 Local agent pipeline — route a transcript straight to a local CLI agent (Claude Code, Hermes, or a custom command) via a dedicated hotkey or mouse chord, and get the result back
 - 💊 Floating capsule widget that stays on top
-- 🗣️ 6+ STT providers: Deepgram, AssemblyAI, Whisper, Groq, GLM-ASR, SiliconFlow
+- ⏱️ Configurable recording length — up to 3 minutes per take (was 30s)
+- ⏸️ Auto-pause media — pauses Spotify / Apple Music / podcasts / video while recording, then resumes when you stop
+- 🎚️ Microphone preference — pin a specific input (e.g. the built-in mic) so recording never silently drops to a Bluetooth device
+- 🔊 Start / stop sound cues
+- 🗣️ 7+ STT providers: Deepgram, AssemblyAI, Whisper, Groq, GLM-ASR, SiliconFlow, Qwen ASR (DashScope)
 - 🤖 Text polishing via multiple LLMs: OpenAI, DeepSeek, Claude, Gemini, Ollama, and more
 - ⚡ Streaming output — text appears as the LLM generates it
 - ⌨️ Keyboard simulation or clipboard output
