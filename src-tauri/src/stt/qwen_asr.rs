@@ -77,7 +77,12 @@ impl SttProvider for QwenAsrProvider {
     }
 
     async fn recv_transcript(&mut self) -> Result<Option<TranscriptEvent>> {
-        Ok(None)
+        // Batch provider: the transcript is produced in disconnect(), not
+        // streamed. Returning Ok(None) immediately makes the pipeline's select!
+        // loop busy-spin at 100% CPU (this branch is always instantly ready),
+        // pegging a core for the whole recording and freezing the UI on longer
+        // takes. Never resolve, so the loop only wakes on incoming audio chunks.
+        std::future::pending::<Result<Option<TranscriptEvent>>>().await
     }
 
     async fn disconnect(&mut self) -> Result<Option<String>> {
@@ -183,7 +188,13 @@ impl SttProvider for QwenAsrProvider {
         }
 
         let v: serde_json::Value = serde_json::from_str(&text)?;
-        tracing::debug!("Qwen ASR raw response: {}", &text[..text.len().min(500)]);
+        // Truncate by CHARS, not bytes: the response is UTF-8 (Chinese is 3
+        // bytes/char), so a byte slice like &text[..500] panics when byte 500
+        // lands mid-character — which is exactly what froze long recordings
+        // (longer transcript → response > 500 bytes → slice → panic → the STT
+        // task dies without signalling stt_done → stop() hangs on "Transcribing").
+        let preview: String = text.chars().take(500).collect();
+        tracing::debug!("Qwen ASR raw response: {}", preview);
 
         // DashScope returns content as either a plain string or an array of {type,text} objects.
         let content = &v["output"]["choices"][0]["message"]["content"];
