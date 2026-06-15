@@ -6,6 +6,7 @@ pub mod media;
 pub mod notify;
 pub mod output;
 pub mod pipeline;
+pub mod sfx;
 pub mod storage;
 pub mod stt;
 
@@ -1869,6 +1870,16 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
+
+            // Keep the recording capsule above normal windows. A single direct
+            // Rust call here is more reliable than the static alwaysOnTop config,
+            // and — unlike asserting always-on-top from the capsule's JS resize
+            // effect — it cannot block the window's show() call (doing so from JS
+            // before show() is what stopped the capsule from appearing at all).
+            #[cfg(target_os = "macos")]
+            if let Some(capsule) = app.get_webview_window("capsule") {
+                let _ = capsule.set_always_on_top(true);
+            }
 
             // Initialize data directory and database
             let data_dir = app.path().app_data_dir()?;

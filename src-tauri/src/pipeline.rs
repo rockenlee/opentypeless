@@ -378,6 +378,7 @@ impl PipelineHandle {
             &self.app_handle,
             Some("OpenTypeless - Recording...".to_string()),
         );
+        crate::sfx::play_cue("Pop"); // activation cue when recording starts
 
         // Clear accumulated text
         self.accumulated_text
@@ -669,6 +670,7 @@ impl PipelineHandle {
             &self.app_handle,
             Some("OpenTypeless - Transcribing...".to_string()),
         );
+        crate::sfx::play_cue("Bottle"); // exit cue when recording stops
 
         let stop_start = std::time::Instant::now();
 
