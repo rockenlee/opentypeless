@@ -49,6 +49,17 @@ jobs:
 
           node -e "const fs=require('fs');let c=fs.readFileSync('src-tauri/Cargo.toml','utf8');c=c.replace(/^version = \".*\"/m,'version = \"$VERSION\"');fs.writeFileSync('src-tauri/Cargo.toml',c);"
 
+      - name: Ad-hoc sign macOS on CI (no Developer ID secrets)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # tauri.conf.json pins an Apple Development cert for local builds (keeps
+          # the Accessibility/TCC grant stable across rebuilds). That cert is not
+          # in the CI runner's keychain, so the bundler's codesign step fails.
+          # Flip to ad-hoc ("-") for the CI build only — local builds are untouched.
+          node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));if(c.bundle&&c.bundle.macOS){c.bundle.macOS.signingIdentity='-';}fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2)+'\n');"
+          echo "macOS signingIdentity -> ad-hoc for CI"
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
