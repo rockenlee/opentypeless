@@ -340,7 +340,13 @@ fn run_capture(
     // Block until stop signal (sender dropped)
     let _ = stop_rx.recv();
 
-    // Stream is dropped here, stopping capture
+    // Explicitly pause BEFORE dropping. On macOS, dropping the cpal Stream alone
+    // does NOT reliably stop the CoreAudio callback — it keeps firing and pushing
+    // chunks into the channel, so the channel never closes, the STT consume loop
+    // never sees EOF, never calls disconnect(), and the pipeline hangs forever on
+    // "Transcribing" (worst on long takes). pause() calls AudioOutputUnitStop,
+    // which actually halts the callback so the sender is released on drop.
+    let _ = stream.pause();
     drop(stream);
     *state.lock().unwrap_or_else(|e| e.into_inner()) = CaptureState::Idle;
     tracing::info!("Audio capture stopped");

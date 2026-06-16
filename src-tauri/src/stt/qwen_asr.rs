@@ -86,6 +86,10 @@ impl SttProvider for QwenAsrProvider {
     }
 
     async fn disconnect(&mut self) -> Result<Option<String>> {
+        tracing::info!(
+            "Qwen ASR disconnect(): audio_buffer = {} bytes",
+            self.audio_buffer.len()
+        );
         let config = match &self.stt_config {
             Some(c) => c.clone(),
             None => return Ok(None),

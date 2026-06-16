@@ -170,6 +170,12 @@ pub struct PipelineHandle {
     audio_volume: Arc<Mutex<f32>>,
     accumulated_text: Arc<Mutex<String>>,
     stt_done: Arc<Notify>,
+    /// Fired by stop()/abort() to tell the STT consume task to finalize. We
+    /// cannot depend on the audio channel closing: on macOS the cpal stream does
+    /// not reliably release its sender on drop, so the channel can stay open
+    /// forever and the consume loop would hang waiting for EOF (the "stuck on
+    /// Transcribing" bug).
+    finalize_stt: Arc<Notify>,
     abort_flag: Arc<AtomicBool>,
     /// Set by `start_for_agent()` so the upcoming stop() routes the transcript
     /// through Hermes regardless of trigger-word prefix. Reset at the end of
@@ -197,6 +203,7 @@ impl PipelineHandle {
             audio_volume: Arc::new(Mutex::new(0.0)),
             accumulated_text: Arc::new(Mutex::new(String::new())),
             stt_done: Arc::new(Notify::new()),
+            finalize_stt: Arc::new(Notify::new()),
             abort_flag: Arc::new(AtomicBool::new(false)),
             force_agent_mode: Arc::new(AtomicBool::new(false)),
             preloaded_config: Arc::new(Mutex::new(None)),
@@ -242,7 +249,8 @@ impl PipelineHandle {
         // Set abort flag so any running stop() exits early
         self.abort_flag.store(true, Ordering::SeqCst);
 
-        // Stop audio capture (closes channel → STT task terminates naturally)
+        // Stop audio capture, then signal the STT task to finalize. abort_flag is
+        // already set above, so the task discards the take instead of transcribing.
         {
             let mut handle = self.audio_handle.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut h) = *handle {
@@ -250,6 +258,7 @@ impl PipelineHandle {
             }
             *handle = None;
         }
+        self.finalize_stt.notify_one();
 
         // Recording aborted — resume any media we paused on start.
         crate::media::resume_local_media();
@@ -575,35 +584,39 @@ impl PipelineHandle {
         let app_handle = self.app_handle.clone();
         let accumulated = self.accumulated_text.clone();
         let stt_done = self.stt_done.clone();
+        let finalize_stt = self.finalize_stt.clone();
+        let abort_flag = self.abort_flag.clone();
 
         tokio::spawn(async move {
-            // Forward audio to STT and receive transcripts
+            // Forward audio to STT until EITHER the audio channel closes (clean
+            // EOF) OR stop()/abort() fires finalize_stt. Relying on the channel
+            // closing alone is NOT safe: on macOS the cpal stream may not release
+            // its sender on drop, so the channel can stay open forever — without
+            // finalize_stt the loop would hang and the pipeline would be stuck on
+            // "Transcribing" forever.
+            let mut chunks_received: u64 = 0;
             loop {
                 tokio::select! {
                     chunk = audio_rx.recv() => {
                         match chunk {
                             Some(data) => {
+                                chunks_received += 1;
                                 let _ = provider.send_audio(&data).await;
                             }
                             None => {
-                                // Audio channel closed — disconnect and capture final transcript
-                                match provider.disconnect().await {
-                                    Ok(Some(text)) => {
-                                        let mut acc = accumulated.lock().unwrap_or_else(|e| e.into_inner());
-                                        acc.push_str(&text);
-                                        let current = acc.clone();
-                                        drop(acc);
-                                        let _ = app_handle.emit("stt:final", &current);
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => {
-                                        tracing::error!("STT disconnect error: {}", e);
-                                        let _ = app_handle.emit("pipeline:error", format!("STT error: {e}"));
-                                    }
-                                }
+                                tracing::info!("STT consume: audio channel closed after {} chunks", chunks_received);
                                 break;
                             }
                         }
+                    }
+                    _ = finalize_stt.notified() => {
+                        // Explicit stop/abort signal: drain whatever real audio is
+                        // still buffered, then stop reading and finalize.
+                        while let Ok(data) = audio_rx.try_recv() {
+                            let _ = provider.send_audio(&data).await;
+                        }
+                        tracing::info!("STT consume: finalize signal after {} chunks", chunks_received);
+                        break;
                     }
                     transcript = provider.recv_transcript() => {
                         match transcript {
@@ -621,9 +634,6 @@ impl PipelineHandle {
                             Ok(Some(TranscriptEvent::Error { message })) => {
                                 tracing::error!("STT error: {}", message);
                                 let _ = app_handle.emit("pipeline:error", format!("STT error: {message}"));
-                                // Break out of the loop — STT has failed, no point
-                                // continuing. Without break, the loop keeps running
-                                // and the pipeline stays stuck in Recording forever.
                                 break;
                             }
                             Err(e) => {
@@ -632,6 +642,26 @@ impl PipelineHandle {
                             }
                             _ => {}
                         }
+                    }
+                }
+            }
+
+            // Finalize exactly once, however the loop exited — skipped on abort
+            // (abort discards the take). For batch providers (qwen-asr) this is
+            // where the transcription HTTP request actually happens.
+            if !abort_flag.load(Ordering::SeqCst) {
+                match provider.disconnect().await {
+                    Ok(Some(text)) => {
+                        let mut acc = accumulated.lock().unwrap_or_else(|e| e.into_inner());
+                        acc.push_str(&text);
+                        let current = acc.clone();
+                        drop(acc);
+                        let _ = app_handle.emit("stt:final", &current);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!("STT disconnect error: {}", e);
+                        let _ = app_handle.emit("pipeline:error", format!("STT error: {e}"));
                     }
                 }
             }
@@ -700,7 +730,10 @@ impl PipelineHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = selected_text;
 
-        // Stop audio capture (this drops the channel, signaling STT task to stop)
+        // Stop audio capture, then explicitly signal the STT task to finalize.
+        // We can't rely on the audio channel closing: on macOS the cpal stream
+        // may not release its sender on drop, so the channel can stay open
+        // forever and the consume loop would hang on EOF.
         {
             let mut handle = self.audio_handle.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut h) = *handle {
@@ -708,6 +741,7 @@ impl PipelineHandle {
             }
             *handle = None;
         }
+        self.finalize_stt.notify_one();
 
         // Recording is over — resume any media we paused on start.
         crate::media::resume_local_media();
