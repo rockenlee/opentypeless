@@ -594,19 +594,15 @@ impl PipelineHandle {
             // its sender on drop, so the channel can stay open forever — without
             // finalize_stt the loop would hang and the pipeline would be stuck on
             // "Transcribing" forever.
-            let mut chunks_received: u64 = 0;
             loop {
                 tokio::select! {
                     chunk = audio_rx.recv() => {
                         match chunk {
                             Some(data) => {
-                                chunks_received += 1;
                                 let _ = provider.send_audio(&data).await;
                             }
-                            None => {
-                                tracing::info!("STT consume: audio channel closed after {} chunks", chunks_received);
-                                break;
-                            }
+                            // Audio channel closed (clean EOF).
+                            None => break,
                         }
                     }
                     _ = finalize_stt.notified() => {
@@ -615,7 +611,6 @@ impl PipelineHandle {
                         while let Ok(data) = audio_rx.try_recv() {
                             let _ = provider.send_audio(&data).await;
                         }
-                        tracing::info!("STT consume: finalize signal after {} chunks", chunks_received);
                         break;
                     }
                     transcript = provider.recv_transcript() => {
