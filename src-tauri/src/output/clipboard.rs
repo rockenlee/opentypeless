@@ -41,60 +41,23 @@ impl TextOutput for ClipboardOutput {
 
             std::thread::sleep(std::time::Duration::from_millis(CLIPBOARD_SETTLE_MS));
 
-            // On macOS: activate the target app then Cmd+V via osascript.
-            // When app_name is known, we activate it first — this is critical when the
-            // Tauri window has stolen focus during a long operation (e.g. Hermes agent).
-            // Skip activation when the detected app is OpenTypeless itself (happens when the
-            // user clicks the capsule instead of using the hotkey) — pasting into ourselves
-            // is never what the user wants.
+            // On macOS: just send Cmd+V to whatever app is currently frontmost.
+            // We deliberately do NOT `activate` the detected app first. The capsule
+            // never steals focus (verified), so the frontmost window IS already the
+            // user's target app. A `tell application "X" to activate` step only
+            // risks yanking focus to the WRONG app — `app_name` is the frontmost
+            // *process* name, which doesn't always resolve to the same AppleScript
+            // application, and the user may have moved on during transcription.
+            // That stray activate was the "it switches my focused app after
+            // pasting" bug.
             #[cfg(target_os = "macos")]
             {
-                // Two-step paste so the target-app `activate` step is best-effort
-                // (it requires per-target Automation grants — OpenTypeless → Cursor,
-                // OpenTypeless → WeChat, etc. — that the user typically hasn't given)
-                // while the actual Cmd+V keystroke is the critical step (only needs
-                // OpenTypeless → System Events).
-                //
-                // If activate fails (no permission for that target app, or the app
-                // isn't running), we log + continue. The keystroke lands on whatever
-                // is currently frontmost — usually still the user's target app,
-                // because OpenTypeless is a small background utility that doesn't
-                // typically steal focus.
-                let lowered = app_name.to_lowercase();
-                let should_activate = !app_name.is_empty()
-                    && !lowered.contains("opentypeless")
-                    && !lowered.contains("tauri");
-                let escaped_name = app_name.replace('\\', "\\\\").replace('"', "\\\"");
+                tracing::debug!(
+                    "Clipboard: Cmd+V into current frontmost app (recorded in '{}')",
+                    app_name
+                );
 
-                // Step 1 (best-effort): bring target app to front.
-                if should_activate {
-                    let activate_script = format!(r#"tell application "{escaped_name}" to activate"#);
-                    let activate_result = std::process::Command::new("osascript")
-                        .arg("-e")
-                        .arg(&activate_script)
-                        .output();
-                    match activate_result {
-                        Ok(out) if out.status.success() => {
-                            // Tiny delay for the app to actually take focus before keystroke.
-                            std::thread::sleep(std::time::Duration::from_millis(80));
-                        }
-                        Ok(out) => {
-                            let stderr = String::from_utf8_lossy(&out.stderr);
-                            tracing::warn!(
-                                "osascript activate '{}' exit {:?}: {} — continuing without activate",
-                                app_name,
-                                out.status.code(),
-                                stderr.trim()
-                            );
-                            // No bail — keystroke might still work on current frontmost.
-                        }
-                        Err(e) => {
-                            tracing::warn!("osascript activate launch failed: {e} — continuing");
-                        }
-                    }
-                }
-
-                // Step 2 (critical): send Cmd+V via System Events.
+                // Send Cmd+V via System Events.
                 let paste_script = r#"tell application "System Events" to keystroke "v" using command down"#;
                 let paste_result = std::process::Command::new("osascript")
                     .arg("-e")
