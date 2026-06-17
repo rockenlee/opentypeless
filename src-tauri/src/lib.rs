@@ -1987,12 +1987,16 @@ pub fn run() {
             let tray_menu = build_tray_menu(&app_handle, false, true)
                 .map_err(|e| anyhow::anyhow!("Failed to build tray menu: {}", e))?;
 
-            let tray = TrayIconBuilder::new()
-                .icon(
-                    app.default_window_icon()
-                        .expect("default window icon missing")
-                        .clone(),
-                )
+            let mut tray_builder = TrayIconBuilder::new();
+            // default_window_icon() can be None depending on platform/bundle; fall
+            // back instead of .expect() so a missing icon can't crash startup — a
+            // GUI-subsystem Windows build would otherwise just silently vanish.
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            } else {
+                tracing::warn!("default window icon missing — tray uses platform default");
+            }
+            let tray = tray_builder
                 .menu(&tray_menu)
                 .tooltip("OpenTypeless")
                 .on_menu_event(move |app, event| match event.id.as_ref() {
