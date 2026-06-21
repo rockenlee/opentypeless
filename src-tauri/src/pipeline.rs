@@ -231,6 +231,35 @@ impl PipelineHandle {
             PipelineState::Idle => "OpenTypeless",
         };
         crate::update_tray(&self.app_handle, Some(tooltip.to_string()));
+
+        // Drive the recording capsule's visibility from Rust. The capsule is a
+        // separate webview window that was supposed to show/hide itself in JS
+        // (useCapsuleResize) on the pipeline:state event — but on macOS the
+        // hidden WKWebView didn't reliably react, so the capsule never appeared
+        // while recording (and its in-webview duration timer never ran, so the
+        // max-length auto-stop didn't fire either). Showing/hiding the window
+        // from the main thread here is deterministic and independent of the
+        // webview's JS. Window ops are main-thread-only (run_on_main_thread).
+        let app_for_capsule = self.app_handle.clone();
+        let _ = self.app_handle.run_on_main_thread(move || {
+            if let Some(capsule) = app_for_capsule.get_webview_window("capsule") {
+                let was_visible = capsule.is_visible().unwrap_or(false);
+                if matches!(new_state, PipelineState::Idle) {
+                    let _ = capsule.hide();
+                } else {
+                    let _ = capsule.show();
+                    let _ = capsule.set_always_on_top(true);
+                }
+                tracing::info!(
+                    "capsule visibility: state={:?} was_visible={} now_visible={:?}",
+                    new_state,
+                    was_visible,
+                    capsule.is_visible()
+                );
+            } else {
+                tracing::warn!("capsule window NOT FOUND (state={:?})", new_state);
+            }
+        });
     }
 
     pub fn current_state(&self) -> PipelineState {
@@ -379,14 +408,11 @@ impl PipelineHandle {
         {
             return Ok(());
         }
-        let _ = self
-            .app_handle
-            .emit("pipeline:state", PipelineState::Recording);
-        // Update tray for recording state (dispatched to the main thread).
-        crate::update_tray(
-            &self.app_handle,
-            Some("OpenTypeless - Recording...".to_string()),
-        );
+        // Route through set_state so the recording capsule is actually shown
+        // (and the tray updated) — emitting pipeline:state directly here used to
+        // bypass set_state's capsule show/hide, which is why the capsule stayed
+        // invisible the whole time we were recording.
+        self.set_state(PipelineState::Recording);
         crate::sfx::play_cue("Pop"); // activation cue when recording starts
 
         // Clear accumulated text
