@@ -896,7 +896,7 @@ impl PipelineHandle {
             return Ok(());
         }
 
-        let final_text;
+        let mut final_text;
         let llm_elapsed;
         let mut agent_response: Option<String> = None;
 
@@ -1019,6 +1019,17 @@ impl PipelineHandle {
                         return Ok(());
                     }
                     final_text = response.polished_text;
+                    // LLM polish can come back empty — the model returns no content
+                    // for a short/garbled take, or the streaming reply carries
+                    // neither content nor reasoning_content. Outputting "" looks
+                    // exactly like "nothing happened" (the user's complaint). Fall
+                    // back to the raw transcript so a recording always lands text.
+                    if final_text.trim().is_empty() {
+                        tracing::warn!(
+                            "LLM polish returned empty — falling back to raw transcript"
+                        );
+                        final_text = raw_text.clone();
+                    }
                     llm_elapsed = llm_start.elapsed();
 
                     if let Err(e) = self
