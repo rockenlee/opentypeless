@@ -30,6 +30,7 @@ impl ClipboardOutput {
 impl TextOutput for ClipboardOutput {
     async fn type_text(&self, text: &str) -> Result<()> {
         let text = text.to_string();
+        #[allow(unused_variables)]
         let app_name = self.app_name.clone();
         tokio::task::spawn_blocking(move || {
             let mut clipboard = arboard::Clipboard::new()
