@@ -262,14 +262,14 @@ describe('SttPane', () => {
     it('renders language dropdown with current value', () => {
       render(<SttPane />)
       const selects = screen.getAllByRole('combobox')
-      const languageSelect = selects[1] // Second select is language
+      const languageSelect = selects[2] // Third select: provider, microphone, language
       expect(languageSelect).toHaveValue('en')
     })
 
     it('updates config when language changes', () => {
       render(<SttPane />)
       const selects = screen.getAllByRole('combobox')
-      const languageSelect = selects[1]
+      const languageSelect = selects[2]
 
       fireEvent.change(languageSelect, { target: { value: 'zh' } })
 
