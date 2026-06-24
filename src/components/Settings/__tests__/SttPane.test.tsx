@@ -4,7 +4,14 @@ import { SttPane } from '../SttPane'
 import * as tauri from '../../../lib/tauri'
 
 // Mock Tauri
-vi.mock('../../../lib/tauri')
+vi.mock('../../../lib/tauri', () => ({
+  testSttConnection: vi.fn().mockResolvedValue(true),
+  benchSttConnection: vi.fn().mockResolvedValue(100),
+  testAudioCapture: vi
+    .fn()
+    .mockResolvedValue({ duration_ms: 3000, chunks: 10, bytes: 32000, max_volume: 0.5 }),
+  listInputDevices: vi.fn().mockResolvedValue([]),
+}))
 
 // Mock i18n
 vi.mock('react-i18next', () => ({
