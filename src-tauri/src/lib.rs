@@ -1213,7 +1213,14 @@ async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
                     CFRelease(ev_up);
                 }
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            {
+                use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+                if let Ok(mut enigo) = Enigo::new(&Settings::default()) {
+                    let _ = enigo.key(Key::Return, Direction::Click);
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 let _ = rdev::simulate(&rdev::EventType::KeyPress(rdev::Key::Return));
                 let _ = rdev::simulate(&rdev::EventType::KeyRelease(rdev::Key::Return));
@@ -1424,8 +1431,94 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
     });
 }
 
-/// Non-macOS: use rdev for global mouse event listening.
-#[cfg(not(target_os = "macos"))]
+/// Windows: poll mouse button state via GetAsyncKeyState at ~125 Hz.
+/// Unlike rdev::listen which installs both WH_KEYBOARD_LL and WH_MOUSE_LL
+/// hooks, polling avoids installing any keyboard hooks entirely — the keyboard
+/// hook conflicts with Windows IME (Input Method Editors), causing crashes and
+/// garbled input when Chinese/Japanese/Korean IMEs are active.
+#[cfg(target_os = "windows")]
+fn start_mouse_listener(app_handle: tauri::AppHandle) {
+    use std::sync::OnceLock;
+
+    static SENDER: OnceLock<tokio::sync::mpsc::UnboundedSender<MouseRawEvent>> = OnceLock::new();
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MouseRawEvent>();
+    if SENDER.set(tx).is_err() {
+        tracing::error!(
+            "start_mouse_listener called more than once; new app_handle discarded."
+        );
+        return;
+    }
+
+    let (tap_tx, tap_rx) = std::sync::mpsc::channel::<bool>();
+
+    std::thread::spawn(move || {
+        const VK_LBUTTON: i32 = 0x01;
+        const VK_RBUTTON: i32 = 0x02;
+        const VK_MBUTTON: i32 = 0x04;
+        let (mut left, mut middle, mut right) = (false, false, false);
+        tracing::info!("Mouse trigger poller started (GetAsyncKeyState)");
+        let _ = tap_tx.send(true);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            let (nl, nm, nr) = unsafe {
+                (
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(VK_LBUTTON)
+                        < 0,
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(VK_MBUTTON)
+                        < 0,
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(VK_RBUTTON)
+                        < 0,
+                )
+            };
+            let tx = match SENDER.get() {
+                Some(t) => t,
+                None => continue,
+            };
+            if nl && !left {
+                let _ = tx.send(MouseRawEvent::LeftDown);
+            }
+            if nr && !right {
+                let _ = tx.send(MouseRawEvent::RightDown);
+            }
+            if nm && !middle {
+                let _ = tx.send(MouseRawEvent::MiddleDown);
+            }
+            if !nm && middle {
+                let _ = tx.send(MouseRawEvent::MiddleUp);
+            }
+            if !nl && left {
+                let _ = tx.send(MouseRawEvent::LeftUp);
+            }
+            if !nr && right {
+                let _ = tx.send(MouseRawEvent::RightUp);
+            }
+            left = nl;
+            middle = nm;
+            right = nr;
+        }
+    });
+
+    tauri::async_runtime::spawn(async move {
+        let tap_ok = tokio::task::spawn_blocking(move || {
+            tap_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+
+        let _ = app_handle.emit("mouse:tap_active", tap_ok);
+        if !tap_ok {
+            tracing::warn!("Mouse tap inactive — emitting warning to frontend");
+        }
+
+        mouse_event_loop(rx, app_handle).await;
+    });
+}
+
+/// Linux: use rdev for global mouse event listening.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn start_mouse_listener(app_handle: tauri::AppHandle) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MouseRawEvent>();
     let (tap_tx, tap_rx) = std::sync::mpsc::channel::<bool>();
@@ -1446,18 +1539,11 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
             }
         }) {
             tracing::error!("rdev mouse listener error: {:?}", e);
-            // rdev::listen only returns on failure; signal the frontend so the
-            // user sees the same "mouse tap inactive" warning as on macOS.
             let _ = tap_tx.send(false);
         }
-        // rdev::listen blocks indefinitely on success; tap_tx is dropped when
-        // the thread exits (on error), so recv_timeout below returns Err and
-        // we fall through to assume success after 1 s.
     });
 
     tauri::async_runtime::spawn(async move {
-        // Wait up to 1 s for a failure signal from the rdev thread.
-        // No signal within 1 s means rdev started successfully.
         let tap_ok = tokio::task::spawn_blocking(move || {
             tap_rx
                 .recv_timeout(std::time::Duration::from_secs(1))

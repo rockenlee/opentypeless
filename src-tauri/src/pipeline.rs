@@ -326,6 +326,12 @@ impl PipelineHandle {
                 .output();
         }
 
+        #[cfg(target_os = "windows")]
+        {
+            crate::output::dismiss_ime_composition();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+
         #[cfg(not(target_os = "macos"))]
         if let Ok(mut enigo) = Enigo::new(&EnigoSettings::default()) {
             let modifier = Key::Control;

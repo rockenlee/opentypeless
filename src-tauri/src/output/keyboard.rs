@@ -28,6 +28,14 @@ impl TextOutput for KeyboardOutput {
     async fn type_text(&self, text: &str) -> Result<()> {
         let text = text.to_string();
         tokio::task::spawn_blocking(move || {
+            // Dismiss active IME composition before typing to avoid crashes and
+            // garbled CJK text when a Chinese/Japanese/Korean IME is active.
+            #[cfg(target_os = "windows")]
+            {
+                super::dismiss_ime_composition();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+
             let mut enigo = Enigo::new(&Settings::default())
                 .map_err(|e| anyhow::anyhow!("Failed to create Enigo: {:?}", e))?;
 
