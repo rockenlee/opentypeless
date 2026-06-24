@@ -227,8 +227,8 @@ fn resolve_command(config: &AppConfig) -> PathBuf {
     }
 
     // Env vars next.
-    if let Ok(command) =
-        std::env::var("OPENTYPELESS_AGENT_COMMAND").or_else(|_| std::env::var("OPENTYPELESS_HERMES_COMMAND"))
+    if let Ok(command) = std::env::var("OPENTYPELESS_AGENT_COMMAND")
+        .or_else(|_| std::env::var("OPENTYPELESS_HERMES_COMMAND"))
     {
         let trimmed = command.trim();
         if !trimmed.is_empty() {
@@ -237,7 +237,11 @@ fn resolve_command(config: &AppConfig) -> PathBuf {
     }
 
     let preset = config.agent_preset.trim().to_lowercase();
-    let preset = if preset.is_empty() { "hermes" } else { preset.as_str() };
+    let preset = if preset.is_empty() {
+        "hermes"
+    } else {
+        preset.as_str()
+    };
     let default_bin = match preset_defaults(preset) {
         Some((bin, _)) => bin,
         None => return PathBuf::new(), // "custom" preset and nothing configured
@@ -274,7 +278,11 @@ fn resolve_args(config: &AppConfig) -> String {
         return configured.to_string();
     }
     let preset = config.agent_preset.trim().to_lowercase();
-    let preset = if preset.is_empty() { "hermes" } else { preset.as_str() };
+    let preset = if preset.is_empty() {
+        "hermes"
+    } else {
+        preset.as_str()
+    };
     match preset_defaults(preset) {
         Some((_, args)) => args.to_string(),
         None => PROMPT_PLACEHOLDER.to_string(), // custom with empty args = just pass prompt

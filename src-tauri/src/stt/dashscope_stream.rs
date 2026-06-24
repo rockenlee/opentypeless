@@ -99,8 +99,8 @@ impl SttProvider for DashscopeStreamProvider {
             .map_err(|e| anyhow!("DashScope: 发送 run-task 失败: {}", e))?;
 
         // Wait for task-started with a hard timeout
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(TASK_START_TIMEOUT_SECS);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(TASK_START_TIMEOUT_SECS);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -169,11 +169,9 @@ impl SttProvider for DashscopeStreamProvider {
             None => return Ok(None),
         };
 
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(RECV_TIMEOUT_SECS),
-            ws.next(),
-        )
-        .await;
+        let msg =
+            tokio::time::timeout(std::time::Duration::from_secs(RECV_TIMEOUT_SECS), ws.next())
+                .await;
 
         let msg = match msg {
             Err(_) => {
@@ -196,8 +194,7 @@ impl SttProvider for DashscopeStreamProvider {
                 match v["header"]["event"].as_str().unwrap_or("") {
                     "result-generated" => {
                         let sentence = &v["payload"]["output"]["sentence"];
-                        let transcript =
-                            sentence["text"].as_str().unwrap_or("").trim().to_string();
+                        let transcript = sentence["text"].as_str().unwrap_or("").trim().to_string();
                         if transcript.is_empty() {
                             return Ok(None);
                         }

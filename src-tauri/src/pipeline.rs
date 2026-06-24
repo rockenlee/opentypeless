@@ -54,7 +54,9 @@ pub fn request_accessibility_permission() -> bool {
             // Open the macOS Accessibility settings pane directly. Safe shell-out,
             // no FFI, works the same on native arm64 and Rosetta x86_64.
             let _ = std::process::Command::new("open")
-                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                )
                 .status();
         }
         trusted
@@ -939,9 +941,7 @@ impl PipelineHandle {
         if let Some(prompt) = hermes_prompt {
             self.set_state(PipelineState::Polishing);
             let agent_start = std::time::Instant::now();
-            let _ = self
-                .app_handle
-                .emit("llm:chunk", "Running agent...\n");
+            let _ = self.app_handle.emit("llm:chunk", "Running agent...\n");
             let _ = self
                 .app_handle
                 .emit("agent:status", agent::runtime_label(&config));
@@ -993,10 +993,7 @@ impl PipelineHandle {
                 }
             }
 
-            tracing::info!(
-                "[Pipeline Timing] Agent: {}ms",
-                llm_elapsed.as_millis()
-            );
+            tracing::info!("[Pipeline Timing] Agent: {}ms", llm_elapsed.as_millis());
         } else if let Some((llm_config, provider)) = pre_llm {
             self.set_state(PipelineState::Polishing);
             let llm_start = std::time::Instant::now();

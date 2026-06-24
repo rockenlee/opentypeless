@@ -113,7 +113,11 @@ impl SttProvider for QwenAsrProvider {
                 sum_sq += (s as f64) * (s as f64);
                 n += 1;
             }
-            let rms = if n > 0 { (sum_sq / n as f64).sqrt() } else { 0.0 };
+            let rms = if n > 0 {
+                (sum_sq / n as f64).sqrt()
+            } else {
+                0.0
+            };
             (peak, rms)
         };
         // Peak well under ~1.5% of full scale over the whole take means there
