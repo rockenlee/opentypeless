@@ -18,6 +18,12 @@ pub struct DashscopeStreamProvider {
     task_id: String,
 }
 
+impl Default for DashscopeStreamProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DashscopeStreamProvider {
     pub fn new() -> Self {
         Self {
