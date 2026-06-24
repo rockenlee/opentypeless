@@ -144,9 +144,7 @@ export function AgentPane() {
             <p className="text-[11px] text-text-tertiary mt-1.5">{presetDef.hint}</p>
           </FormField>
 
-          <FormField
-            label={t('settings.agentCommand', { defaultValue: 'Command (override)' })}
-          >
+          <FormField label={t('settings.agentCommand', { defaultValue: 'Command (override)' })}>
             <input
               value={config.agent_command}
               onChange={(e) => updateConfig({ agent_command: e.target.value })}
@@ -165,9 +163,7 @@ export function AgentPane() {
             </p>
           </FormField>
 
-          <FormField
-            label={t('settings.agentArgs', { defaultValue: 'Args template' })}
-          >
+          <FormField label={t('settings.agentArgs', { defaultValue: 'Args template' })}>
             <input
               value={config.agent_args}
               onChange={(e) => updateConfig({ agent_args: e.target.value })}

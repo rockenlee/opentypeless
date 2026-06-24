@@ -191,7 +191,9 @@ export function History() {
                           </motion.button>
                         )}
                         <motion.button
-                          onClick={() => handleCopy(entry.id, entry.agent_response ?? entry.polished_text)}
+                          onClick={() =>
+                            handleCopy(entry.id, entry.agent_response ?? entry.polished_text)
+                          }
                           whileTap={{ scaleX: 1.1, scaleY: 0.9 }}
                           transition={spring.jelly}
                           className="p-1.5 rounded-[6px] hover:bg-bg-tertiary transition-all duration-200 bg-transparent border-none cursor-pointer text-text-tertiary hover:text-accent flex-shrink-0"
@@ -210,12 +212,16 @@ export function History() {
                           }`}
                           aria-label={
                             confirmDeleteId === entry.id
-                              ? t('history.confirmDelete', { defaultValue: 'Click again to delete' })
+                              ? t('history.confirmDelete', {
+                                  defaultValue: 'Click again to delete',
+                                })
                               : t('history.deleteEntry', { defaultValue: 'Delete entry' })
                           }
                           title={
                             confirmDeleteId === entry.id
-                              ? t('history.confirmDelete', { defaultValue: 'Click again to delete' })
+                              ? t('history.confirmDelete', {
+                                  defaultValue: 'Click again to delete',
+                                })
                               : t('history.deleteEntry', { defaultValue: 'Delete entry' })
                           }
                         >
@@ -254,7 +260,9 @@ export function History() {
           >
             <Trash2 size={12} />
             {confirmClearArmed
-              ? t('history.clearConfirm', { defaultValue: 'Click again to confirm — clears ALL history' })
+              ? t('history.clearConfirm', {
+                  defaultValue: 'Click again to confirm — clears ALL history',
+                })
               : t('history.clearAll')}
           </motion.button>
         </div>

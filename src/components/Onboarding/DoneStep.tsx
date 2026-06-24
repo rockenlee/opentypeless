@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Check, Keyboard, MousePointerClick, GripHorizontal, MousePointer, ShieldAlert, ShieldCheck } from 'lucide-react'
+import {
+  Check,
+  Keyboard,
+  MousePointerClick,
+  GripHorizontal,
+  MousePointer,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { checkAccessibilityPermission, requestAccessibilityPermission } from '../../lib/tauri'
 
 export function DoneStep() {
   const config = useAppStore((s) => s.config)
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
+  const isMac =
+    typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
   const [a11yTrusted, setA11yTrusted] = useState<boolean | null>(null)
   const showPermissionCard = isMac && config.output_mode === 'keyboard'
 
