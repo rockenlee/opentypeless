@@ -65,7 +65,9 @@ pub fn show_update_notification(version: &str) {
     {
         let body = format!("新版本 {version} 可用，前往 GitHub 下载更新");
         let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
-        let escaped_title = "OpenTypeless 更新".replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_title = "OpenTypeless 更新"
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
         let script = format!(
             r#"display notification "{escaped_body}" with title "{escaped_title}" sound name "Glass""#
         );
