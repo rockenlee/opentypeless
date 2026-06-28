@@ -17,6 +17,12 @@ pub struct QwenAsrProvider {
     client: reqwest::Client,
 }
 
+impl Default for QwenAsrProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QwenAsrProvider {
     pub fn new() -> Self {
         Self {
@@ -113,7 +119,11 @@ impl SttProvider for QwenAsrProvider {
                 sum_sq += (s as f64) * (s as f64);
                 n += 1;
             }
-            let rms = if n > 0 { (sum_sq / n as f64).sqrt() } else { 0.0 };
+            let rms = if n > 0 {
+                (sum_sq / n as f64).sqrt()
+            } else {
+                0.0
+            };
             (peak, rms)
         };
         // Peak well under ~1.5% of full scale over the whole take means there
@@ -156,15 +166,30 @@ impl SttProvider for QwenAsrProvider {
             asr_options["language"] = serde_json::Value::String(lang.clone());
         }
 
-        // DashScope native format: audio content goes under input.messages, not top-level messages.
+        // DashScope native format: audio content goes under input.messages.
+        // qwen3-asr "context enhancement": prepend a system message carrying the
+        // user's custom terms (the dictionary, passed via config.hotwords) so
+        // recognition is biased toward their correct spellings — this is what
+        // keeps domain/technical/proper-noun words (皇包车, Codex, Multica, git,
+        // huangbaoche.com ...) from being misheard at the STT stage.
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        if !config.hotwords.is_empty() {
+            let terms = config.hotwords.join("、");
+            let context = format!(
+                "以下是用户常用的专有名词、产品名、人名与技术术语，识别时请优先按这些正确写法输出：{terms}"
+            );
+            messages.push(serde_json::json!({
+                "role": "system",
+                "content": [{ "type": "text", "text": context }]
+            }));
+        }
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "audio", "audio": audio_uri }]
+        }));
         let body = serde_json::json!({
             "model": MODEL,
-            "input": {
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "audio", "audio": audio_uri }]
-                }]
-            },
+            "input": { "messages": messages },
             "parameters": asr_options
         });
 

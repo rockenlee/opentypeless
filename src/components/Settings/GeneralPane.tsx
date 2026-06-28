@@ -2,14 +2,29 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppStore } from '../../stores/appStore'
 import type { HotkeyMode, OutputMode, MouseTriggerAction } from '../../stores/appStore'
-import { updateHotkey, updateTranslateHotkey, updateAgentHotkey, pauseHotkey, resumeHotkey, checkAccessibilityPermission, requestAccessibilityPermission, updateMouseTriggers } from '../../lib/tauri'
+import {
+  updateHotkey,
+  updateTranslateHotkey,
+  updateAgentHotkey,
+  pauseHotkey,
+  resumeHotkey,
+  checkAccessibilityPermission,
+  requestAccessibilityPermission,
+  updateMouseTriggers,
+} from '../../lib/tauri'
 import { TARGET_LANGUAGES } from '../../lib/constants'
 import { toast } from '../Toast'
 import { SegmentedControl } from './shared/SegmentedControl'
 import { Toggle } from './shared/Toggle'
 import { FormField } from './shared/FormField'
 
-function MouseActionSelect({ value, onChange }: { value: MouseTriggerAction; onChange: (v: MouseTriggerAction) => void }) {
+function MouseActionSelect({
+  value,
+  onChange,
+}: {
+  value: MouseTriggerAction
+  onChange: (v: MouseTriggerAction) => void
+}) {
   const { t } = useTranslation()
   const options: { value: MouseTriggerAction; label: string }[] = [
     { value: 'recording', label: t('settings.actionVoiceRecording') },
@@ -25,13 +40,18 @@ function MouseActionSelect({ value, onChange }: { value: MouseTriggerAction; onC
       className="px-2 py-1.5 bg-bg-secondary border border-border rounded-[8px] text-[12px] text-text-primary outline-none focus:border-border-focus transition-colors"
     >
       {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
       ))}
     </select>
   )
 }
 
-function useMouseTriggerSave(config: ReturnType<typeof useAppStore.getState>['config'], updateConfig: ReturnType<typeof useAppStore.getState>['updateConfig']) {
+function useMouseTriggerSave(
+  config: ReturnType<typeof useAppStore.getState>['config'],
+  updateConfig: ReturnType<typeof useAppStore.getState>['updateConfig'],
+) {
   const save = async (patch: Partial<typeof config>) => {
     const next = { ...config, ...patch }
     updateConfig(patch)
@@ -43,7 +63,7 @@ function useMouseTriggerSave(config: ReturnType<typeof useAppStore.getState>['co
         middleRightAction: next.mouse_middle_right_action,
         leftMiddleAction: next.mouse_left_middle_action,
       })
-    } catch (e) {
+    } catch {
       toast.error('Failed to save mouse trigger settings')
     }
   }
@@ -57,25 +77,83 @@ function useMouseTriggerSave(config: ReturnType<typeof useAppStore.getState>['co
 // (e.g. Option+/ → "÷", Option+. → "≥") and by Shift (Shift+. → ">").
 const CODE_TO_NAME: Record<string, string> = {
   // Letters
-  KeyA: 'A', KeyB: 'B', KeyC: 'C', KeyD: 'D', KeyE: 'E', KeyF: 'F', KeyG: 'G',
-  KeyH: 'H', KeyI: 'I', KeyJ: 'J', KeyK: 'K', KeyL: 'L', KeyM: 'M', KeyN: 'N',
-  KeyO: 'O', KeyP: 'P', KeyQ: 'Q', KeyR: 'R', KeyS: 'S', KeyT: 'T', KeyU: 'U',
-  KeyV: 'V', KeyW: 'W', KeyX: 'X', KeyY: 'Y', KeyZ: 'Z',
+  KeyA: 'A',
+  KeyB: 'B',
+  KeyC: 'C',
+  KeyD: 'D',
+  KeyE: 'E',
+  KeyF: 'F',
+  KeyG: 'G',
+  KeyH: 'H',
+  KeyI: 'I',
+  KeyJ: 'J',
+  KeyK: 'K',
+  KeyL: 'L',
+  KeyM: 'M',
+  KeyN: 'N',
+  KeyO: 'O',
+  KeyP: 'P',
+  KeyQ: 'Q',
+  KeyR: 'R',
+  KeyS: 'S',
+  KeyT: 'T',
+  KeyU: 'U',
+  KeyV: 'V',
+  KeyW: 'W',
+  KeyX: 'X',
+  KeyY: 'Y',
+  KeyZ: 'Z',
   // Digits (top row)
-  Digit0: '0', Digit1: '1', Digit2: '2', Digit3: '3', Digit4: '4',
-  Digit5: '5', Digit6: '6', Digit7: '7', Digit8: '8', Digit9: '9',
+  Digit0: '0',
+  Digit1: '1',
+  Digit2: '2',
+  Digit3: '3',
+  Digit4: '4',
+  Digit5: '5',
+  Digit6: '6',
+  Digit7: '7',
+  Digit8: '8',
+  Digit9: '9',
   // Symbols
-  Period: '.', Comma: ',', Slash: '/', Backslash: '\\',
-  Semicolon: ';', Quote: "'", Backquote: '`',
-  Minus: '-', Equal: '=',
-  BracketLeft: '[', BracketRight: ']',
+  Period: '.',
+  Comma: ',',
+  Slash: '/',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
   // Navigation / function
-  Space: 'Space', Tab: 'Tab', Enter: 'Enter', Backspace: 'Backspace',
-  Escape: 'Escape', Delete: 'Delete', Insert: 'Insert',
-  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
-  ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
-  F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
-  F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+  Space: 'Space',
+  Tab: 'Tab',
+  Enter: 'Enter',
+  Backspace: 'Backspace',
+  Escape: 'Escape',
+  Delete: 'Delete',
+  Insert: 'Insert',
+  Home: 'Home',
+  End: 'End',
+  PageUp: 'PageUp',
+  PageDown: 'PageDown',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+  F1: 'F1',
+  F2: 'F2',
+  F3: 'F3',
+  F4: 'F4',
+  F5: 'F5',
+  F6: 'F6',
+  F7: 'F7',
+  F8: 'F8',
+  F9: 'F9',
+  F10: 'F10',
+  F11: 'F11',
+  F12: 'F12',
   // macOS Return key sometimes reports as NumpadEnter
   NumpadEnter: 'Enter',
 }
@@ -183,10 +261,14 @@ function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
       // If only modifier keys are pressed, show hint like "Alt+..."
       // Modifier-key codes are stable across layouts and modifier state.
       const MODIFIER_CODES = new Set([
-        'ControlLeft', 'ControlRight',
-        'ShiftLeft', 'ShiftRight',
-        'AltLeft', 'AltRight',
-        'MetaLeft', 'MetaRight',
+        'ControlLeft',
+        'ControlRight',
+        'ShiftLeft',
+        'ShiftRight',
+        'AltLeft',
+        'AltRight',
+        'MetaLeft',
+        'MetaRight',
       ])
       if (MODIFIER_CODES.has(e.code)) {
         setModifierHint(parts.length > 0 ? parts.join('+') + '+...' : null)
@@ -282,7 +364,8 @@ export function GeneralPane() {
   const updateConfig = useAppStore((s) => s.updateConfig)
   const saveMouse = useMouseTriggerSave(config, updateConfig)
   const { t } = useTranslation()
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
+  const isMac =
+    typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0
   const [a11yTrusted, setA11yTrusted] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -317,9 +400,7 @@ export function GeneralPane() {
       </Section>
 
       <Section title={t('settings.translateHotkey')}>
-        <p className="text-[11px] text-text-tertiary mb-2">
-          {t('settings.translateHotkeyDesc')}
-        </p>
+        <p className="text-[11px] text-text-tertiary mb-2">{t('settings.translateHotkeyDesc')}</p>
         <HotkeyRecorder kind="translate" />
         <div className="mt-3">
           <FormField label={t('settings.targetLanguage')}>
@@ -341,24 +422,18 @@ export function GeneralPane() {
             className={`w-2 h-2 rounded-full ${config.translate_enabled ? 'bg-green-500' : 'bg-text-tertiary'}`}
           />
           <span className="text-[11px] text-text-tertiary">
-            {config.translate_enabled
-              ? t('settings.translateOn')
-              : t('settings.translateOff')}
+            {config.translate_enabled ? t('settings.translateOn') : t('settings.translateOff')}
           </span>
         </div>
       </Section>
 
       <Section title={t('settings.agentHotkey')}>
-        <p className="text-[11px] text-text-tertiary mb-2">
-          {t('settings.agentHotkeyDesc')}
-        </p>
+        <p className="text-[11px] text-text-tertiary mb-2">{t('settings.agentHotkeyDesc')}</p>
         <HotkeyRecorder kind="agent" />
       </Section>
 
       <Section title={t('settings.mouseTrigger')}>
-        <p className="text-[11px] text-text-tertiary mb-3">
-          {t('settings.mouseTriggerDesc')}
-        </p>
+        <p className="text-[11px] text-text-tertiary mb-3">{t('settings.mouseTriggerDesc')}</p>
         <div className="flex items-center justify-between mb-3">
           <Toggle
             checked={config.mouse_triggers_enabled}
@@ -383,14 +458,18 @@ export function GeneralPane() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[12px] text-text-secondary">{t('settings.middlePlusRight')}</span>
+              <span className="text-[12px] text-text-secondary">
+                {t('settings.middlePlusRight')}
+              </span>
               <MouseActionSelect
                 value={config.mouse_middle_right_action}
                 onChange={(v) => saveMouse({ mouse_middle_right_action: v })}
               />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[12px] text-text-secondary">{t('settings.leftPlusMiddle')}</span>
+              <span className="text-[12px] text-text-secondary">
+                {t('settings.leftPlusMiddle')}
+              </span>
               <MouseActionSelect
                 value={config.mouse_left_middle_action}
                 onChange={(v) => saveMouse({ mouse_left_middle_action: v })}
@@ -432,30 +511,32 @@ export function GeneralPane() {
         />
       </Section>
 
-      {isMac && (config.output_mode === 'keyboard' || config.mouse_triggers_enabled) && a11yTrusted !== null && (
-        <Section title={t('settings.accessibilityPermission')}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span
-                className={`w-2 h-2 rounded-full ${a11yTrusted ? 'bg-green-500' : 'bg-amber-500'}`}
-              />
-              <span className="text-[13px] text-text-primary">
-                {a11yTrusted
-                  ? t('settings.accessibilityGranted')
-                  : t('settings.accessibilityRequired')}
-              </span>
+      {isMac &&
+        (config.output_mode === 'keyboard' || config.mouse_triggers_enabled) &&
+        a11yTrusted !== null && (
+          <Section title={t('settings.accessibilityPermission')}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full ${a11yTrusted ? 'bg-green-500' : 'bg-amber-500'}`}
+                />
+                <span className="text-[13px] text-text-primary">
+                  {a11yTrusted
+                    ? t('settings.accessibilityGranted')
+                    : t('settings.accessibilityRequired')}
+                </span>
+              </div>
+              {!a11yTrusted && (
+                <button
+                  onClick={handleGrantPermission}
+                  className="px-3 py-1.5 text-[12px] font-medium text-white bg-accent rounded-full border-none cursor-pointer hover:bg-accent-hover transition-colors"
+                >
+                  {t('settings.grantPermission')}
+                </button>
+              )}
             </div>
-            {!a11yTrusted && (
-              <button
-                onClick={handleGrantPermission}
-                className="px-3 py-1.5 text-[12px] font-medium text-white bg-accent rounded-full border-none cursor-pointer hover:bg-accent-hover transition-colors"
-              >
-                {t('settings.grantPermission')}
-              </button>
-            )}
-          </div>
-        </Section>
-      )}
+          </Section>
+        )}
 
       <Section title={t('settings.maxRecordingDuration', 'Max Recording Duration')}>
         <div className="flex items-center gap-3">

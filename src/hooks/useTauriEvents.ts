@@ -43,6 +43,7 @@ export function useTauriEvents() {
     setAgentResult,
     resetRecording,
     updateConfig,
+    setUpdateInfo,
   } = useAppStore()
 
   useEffect(() => {
@@ -89,6 +90,7 @@ export function useTauriEvents() {
       }
     })
     addListener<string>('pipeline:target_app', setTargetApp)
+    addListener<{ version: string; url: string }>('update:available', setUpdateInfo)
     addListener<string>('pipeline:error', (error) => {
       console.error('[pipeline:error]', error)
       setPipelineError(error)
@@ -149,5 +151,6 @@ export function useTauriEvents() {
     setAgentResult,
     resetRecording,
     updateConfig,
+    setUpdateInfo,
   ])
 }

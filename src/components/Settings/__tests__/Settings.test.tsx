@@ -85,6 +85,7 @@ vi.mock('../../../lib/tauri', () => ({
   removeDictionaryEntry: vi.fn().mockResolvedValue(undefined),
   getDictionary: vi.fn().mockResolvedValue([]),
   updateConfig: vi.fn().mockResolvedValue(undefined),
+  listInputDevices: vi.fn().mockResolvedValue([]),
 }))
 
 // ─── Mock @tauri-apps/plugin-opener ─────────────────────────────────────────

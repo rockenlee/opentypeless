@@ -30,6 +30,7 @@ impl ClipboardOutput {
 impl TextOutput for ClipboardOutput {
     async fn type_text(&self, text: &str) -> Result<()> {
         let text = text.to_string();
+        #[allow(unused_variables)]
         let app_name = self.app_name.clone();
         tokio::task::spawn_blocking(move || {
             let mut clipboard = arboard::Clipboard::new()
@@ -118,6 +119,14 @@ impl TextOutput for ClipboardOutput {
 
             #[cfg(not(target_os = "macos"))]
             {
+                // Dismiss active IME composition before Ctrl+V to prevent the
+                // IME from intercepting the paste keystroke.
+                #[cfg(target_os = "windows")]
+                {
+                    super::dismiss_ime_composition();
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+
                 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
                 let mut enigo = Enigo::new(&Settings::default())
                     .map_err(|e| anyhow::anyhow!("Failed to create Enigo: {:?}", e))?;

@@ -4,7 +4,11 @@ import { LlmPane } from '../LlmPane'
 import * as tauri from '../../../lib/tauri'
 
 // Mock Tauri
-vi.mock('../../../lib/tauri')
+vi.mock('../../../lib/tauri', () => ({
+  testLlmConnection: vi.fn().mockResolvedValue(true),
+  benchLlmConnection: vi.fn().mockResolvedValue(100),
+  fetchLlmModels: vi.fn().mockResolvedValue(['gpt-4o', 'gpt-3.5-turbo']),
+}))
 
 // Mock i18n
 vi.mock('react-i18next', () => ({
