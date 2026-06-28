@@ -57,3 +57,28 @@ pub fn show_agent_notification(body: &str) {
         let _ = body;
     }
 }
+
+/// Notify the user that a newer release is available. Purely a reminder — the
+/// app does not download or install anything; the user updates manually.
+pub fn show_update_notification(version: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let body = format!("新版本 {version} 可用，前往 GitHub 下载更新");
+        let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_title = "OpenTypeless 更新".replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"display notification "{escaped_body}" with title "{escaped_title}" sound name "Glass""#
+        );
+
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output();
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = version;
+    }
+}

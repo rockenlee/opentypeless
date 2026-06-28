@@ -174,6 +174,10 @@ interface AppState {
   pipelineError: string | null
   setPipelineError: (error: string | null) => void
 
+  // Update reminder (newer release available on GitHub)
+  updateInfo: { version: string; url: string } | null
+  setUpdateInfo: (info: { version: string; url: string } | null) => void
+
   // macOS Accessibility permission
   accessibilityTrusted: boolean
   setAccessibilityTrusted: (trusted: boolean) => void
@@ -297,6 +301,9 @@ export const useAppStore = create<AppState>((set) => ({
 
   pipelineError: null,
   setPipelineError: (pipelineError) => set({ pipelineError }),
+
+  updateInfo: null,
+  setUpdateInfo: (updateInfo) => set({ updateInfo }),
 
   accessibilityTrusted: true,
   setAccessibilityTrusted: (accessibilityTrusted) => set({ accessibilityTrusted }),

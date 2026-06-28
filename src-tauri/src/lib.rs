@@ -9,6 +9,7 @@ pub mod pipeline;
 pub mod sfx;
 pub mod storage;
 pub mod stt;
+pub mod update;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -2008,6 +2009,18 @@ pub fn run() {
             app.manage(history_store);
             app.manage(dictionary_store);
             app.manage(pipeline_handle);
+
+            // Lightweight update reminder: a few seconds after launch, ask GitHub
+            // whether a newer release exists and, if so, notify the user. Non-
+            // blocking and silent on any failure — never downloads or installs.
+            {
+                let update_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    crate::update::check_for_update(update_app, reqwest::Client::new()).await;
+                });
+            }
+
             app.manage(HotkeyModeCache(Arc::new(Mutex::new(
                 initial_config.hotkey_mode.clone(),
             ))));
