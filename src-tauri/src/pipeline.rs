@@ -183,6 +183,12 @@ pub struct PipelineHandle {
     /// through Hermes regardless of trigger-word prefix. Reset at the end of
     /// stop() (so a subsequent normal start/stop is unaffected).
     force_agent_mode: Arc<AtomicBool>,
+    /// Set true by the STT consume loop when ANY audio chunk arrives from the
+    /// capture thread. Lets stop() tell a genuinely silent take (data flowed but
+    /// quiet) apart from a stuck mic (zero data — another app grabbed it and this
+    /// process's audio went dead; a fresh cpal stream doesn't recover, only a
+    /// process restart does).
+    audio_received: Arc<AtomicBool>,
     preloaded_config: Arc<Mutex<Option<storage::AppConfig>>>,
     preloaded_app_ctx: Arc<Mutex<Option<app_detector::AppContext>>>,
     preloaded_dictionary: Arc<Mutex<Option<Vec<String>>>>,
@@ -208,6 +214,7 @@ impl PipelineHandle {
             finalize_stt: Arc::new(Notify::new()),
             abort_flag: Arc::new(AtomicBool::new(false)),
             force_agent_mode: Arc::new(AtomicBool::new(false)),
+            audio_received: Arc::new(AtomicBool::new(false)),
             preloaded_config: Arc::new(Mutex::new(None)),
             preloaded_app_ctx: Arc::new(Mutex::new(None)),
             preloaded_dictionary: Arc::new(Mutex::new(None)),
@@ -216,6 +223,50 @@ impl PipelineHandle {
             shared_client: reqwest::Client::new(),
             pipeline_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The microphone went dead mid-session: another audio app grabbed it and on
+    /// macOS this process's CoreAudio stops delivering samples — a fresh cpal
+    /// stream does NOT recover, only relaunching the process does. Auto-restart to
+    /// recover. A marker file (which survives the restart) guards against a loop:
+    /// if we already restarted within the last 90s and the mic is STILL dead, the
+    /// cause is persistent (e.g. the other app still holds the mic), so show a
+    /// clear message instead of restarting again.
+    fn recover_stuck_mic(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let marker = self
+            .app_handle
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join(".last_audio_restart"));
+        let last = marker
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        if let Some(last) = last {
+            if now.saturating_sub(last) < 90 {
+                tracing::warn!(
+                    "Mic still dead {}s after an auto-restart — not looping; asking user to free the mic",
+                    now.saturating_sub(last)
+                );
+                let _ = self.app_handle.emit(
+                    "pipeline:error",
+                    "麦克风无信号,可能被其他录音应用(如 Typeless / 会议软件)占用,请关闭后重试。",
+                );
+                return;
+            }
+        }
+        if let Some(p) = marker {
+            let _ = std::fs::write(&p, now.to_string());
+        }
+        tracing::warn!(
+            "Microphone delivered no audio (stuck) — auto-restarting OpenTypeless to recover"
+        );
+        self.app_handle.restart();
     }
 
     fn set_state(&self, new_state: PipelineState) {
@@ -620,6 +671,10 @@ impl PipelineHandle {
         let stt_done = self.stt_done.clone();
         let finalize_stt = self.finalize_stt.clone();
         let abort_flag = self.abort_flag.clone();
+        // Track whether the capture thread delivers ANY audio this take, so stop()
+        // can tell a stuck mic (zero chunks) from a silent take (quiet chunks).
+        self.audio_received.store(false, Ordering::SeqCst);
+        let audio_received = self.audio_received.clone();
 
         tokio::spawn(async move {
             // Forward audio to STT until EITHER the audio channel closes (clean
@@ -633,6 +688,7 @@ impl PipelineHandle {
                     chunk = audio_rx.recv() => {
                         match chunk {
                             Some(data) => {
+                                audio_received.store(true, Ordering::Relaxed);
                                 let _ = provider.send_audio(&data).await;
                             }
                             // Audio channel closed (clean EOF).
@@ -643,6 +699,7 @@ impl PipelineHandle {
                         // Explicit stop/abort signal: drain whatever real audio is
                         // still buffered, then stop reading and finalize.
                         while let Ok(data) = audio_rx.try_recv() {
+                            audio_received.store(true, Ordering::Relaxed);
                             let _ = provider.send_audio(&data).await;
                         }
                         break;
@@ -886,9 +943,17 @@ impl PipelineHandle {
                 .map(|d| d < std::time::Duration::from_millis(500))
                 .unwrap_or(false);
             if !was_a_misfire {
-                let _ = self
-                    .app_handle
-                    .emit("pipeline:error", "No speech detected. Please try again.");
+                if !self.audio_received.load(Ordering::SeqCst) {
+                    // Long enough to expect audio, yet the capture thread delivered
+                    // ZERO chunks: the mic is stuck (another app grabbed it and this
+                    // process's audio went dead — a fresh cpal stream won't recover,
+                    // only a process restart does). Auto-restart to recover.
+                    self.recover_stuck_mic();
+                } else {
+                    let _ = self
+                        .app_handle
+                        .emit("pipeline:error", "No speech detected. Please try again.");
+                }
             } else {
                 tracing::info!(
                     "Recording too short ({:?}) — treating as misfire, no error",
