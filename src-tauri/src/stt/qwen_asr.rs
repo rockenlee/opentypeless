@@ -17,6 +17,12 @@ pub struct QwenAsrProvider {
     client: reqwest::Client,
 }
 
+impl Default for QwenAsrProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QwenAsrProvider {
     pub fn new() -> Self {
         Self {

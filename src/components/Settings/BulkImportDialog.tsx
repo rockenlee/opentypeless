@@ -240,10 +240,7 @@ export function BulkImportDialog({ onClose }: { onClose: () => void }) {
     if (!preview || preview.valid.length === 0) return
     setImporting(true)
     try {
-      const entries: [string, string | null][] = preview.valid.map((p) => [
-        p.word,
-        p.pronunciation,
-      ])
+      const entries: [string, string | null][] = preview.valid.map((p) => [p.word, p.pronunciation])
       const result = await bulkAddDictionaryEntries(entries)
       setImportedCount(result.imported)
       setDone(true)
@@ -281,12 +278,7 @@ export function BulkImportDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const renderSection = (
-    key: string,
-    label: string,
-    items: ParsedLine[],
-    color: string,
-  ) => {
+  const renderSection = (key: string, label: string, items: ParsedLine[], color: string) => {
     if (items.length === 0) return null
     const isExpanded = expandSection === key
     return (
@@ -395,13 +387,14 @@ export function BulkImportDialog({ onClose }: { onClose: () => void }) {
               <p className="text-[14px] text-text-primary m-0 text-center">
                 {t('dictionary.bulkImport.doneMessage', { count: importedCount })}
               </p>
-              {preview && (preview.duplicateExisting.length + preview.duplicateInternal.length > 0) && (
-                <p className="text-[12px] text-text-secondary m-0 text-center">
-                  {t('dictionary.bulkImport.skippedDuplicates', {
-                    count: preview.duplicateExisting.length + preview.duplicateInternal.length,
-                  })}
-                </p>
-              )}
+              {preview &&
+                preview.duplicateExisting.length + preview.duplicateInternal.length > 0 && (
+                  <p className="text-[12px] text-text-secondary m-0 text-center">
+                    {t('dictionary.bulkImport.skippedDuplicates', {
+                      count: preview.duplicateExisting.length + preview.duplicateInternal.length,
+                    })}
+                  </p>
+                )}
               {preview && preview.invalid.length > 0 && (
                 <p className="text-[12px] text-text-secondary m-0 text-center">
                   {t('dictionary.bulkImport.skippedInvalid', { count: preview.invalid.length })}

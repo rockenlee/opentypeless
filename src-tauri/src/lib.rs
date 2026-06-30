@@ -71,6 +71,7 @@ enum MouseRawEvent {
 // Only subscribes to mouse button event types — avoids the keyboard/TSM crash
 // that rdev triggers by processing all event types on a background thread.
 #[cfg(target_os = "macos")]
+#[allow(clippy::duplicated_attributes)]
 #[link(name = "CoreGraphics", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {

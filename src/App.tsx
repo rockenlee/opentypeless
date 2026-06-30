@@ -5,7 +5,13 @@ import { useTheme } from './hooks/useTheme'
 import { useAppStore } from './stores/appStore'
 import { useAuthStore } from './stores/authStore'
 import { useRoute } from './lib/router'
-import { loadOnboardingCompleted, getConfig, getHistory, getDictionary, checkAccessibilityPermission } from './lib/tauri'
+import {
+  loadOnboardingCompleted,
+  getConfig,
+  getHistory,
+  getDictionary,
+  checkAccessibilityPermission,
+} from './lib/tauri'
 import { initDeepLinkListener } from './lib/deep-link'
 import { Capsule } from './components/Capsule'
 import { Settings } from './components/Settings'
@@ -107,7 +113,14 @@ function MainApp() {
 
     // Initialize deep-link listener
     initDeepLinkListener()
-  }, [setOnboardingCompleted, setConfig, setSavedConfig, setHistory, setDictionary, setAccessibilityTrusted])
+  }, [
+    setOnboardingCompleted,
+    setConfig,
+    setSavedConfig,
+    setHistory,
+    setDictionary,
+    setAccessibilityTrusted,
+  ])
 
   const user = useAuthStore((s) => s.user)
 
