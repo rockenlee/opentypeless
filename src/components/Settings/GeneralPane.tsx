@@ -43,7 +43,7 @@ function useMouseTriggerSave(config: ReturnType<typeof useAppStore.getState>['co
         middleRightAction: next.mouse_middle_right_action,
         leftMiddleAction: next.mouse_left_middle_action,
       })
-    } catch (e) {
+    } catch {
       toast.error('Failed to save mouse trigger settings')
     }
   }

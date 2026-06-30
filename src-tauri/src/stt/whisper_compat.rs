@@ -232,8 +232,14 @@ fn build_whisper_prompt(hotwords: &[String]) -> String {
     // Score: entries with non-CJK chars come first (brand names, abbreviations, etc.)
     let mut scored: Vec<&str> = hotwords.iter().map(String::as_str).collect();
     scored.sort_by_key(|w| {
-        let has_non_cjk = w.chars().any(|c| !matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}'));
-        if has_non_cjk { 0usize } else { 1usize }
+        let has_non_cjk = w
+            .chars()
+            .any(|c| !matches!(c, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}'));
+        if has_non_cjk {
+            0usize
+        } else {
+            1usize
+        }
     });
 
     scored

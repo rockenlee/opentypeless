@@ -447,9 +447,7 @@ async fn test_agent_route(
         selected_text: None,
         config,
     };
-    let response = agent::run_agent(request)
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = agent::run_agent(request).await.map_err(|e| e.to_string())?;
     pipeline::show_agent_result_window(&app, response.clone()).map_err(|e| e.to_string())?;
     Ok(response)
 }
@@ -1164,7 +1162,11 @@ async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
             return;
         }
     };
-    tracing::info!("mouse gesture '{}' received (triggers_enabled={})", gesture, enabled);
+    tracing::info!(
+        "mouse gesture '{}' received (triggers_enabled={})",
+        gesture,
+        enabled
+    );
     if !enabled {
         return;
     }
@@ -1404,7 +1406,7 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
         // (Typing the result into other apps still needs Accessibility — that is
         // surfaced separately by the pipeline, not by this listener.)
         const SOURCE_STATE: u32 = 0; // kCGEventSourceStateCombinedSessionState
-        // CGMouseButton: left = 0, right = 1, center (middle) = 2
+                                     // CGMouseButton: left = 0, right = 1, center (middle) = 2
         let (mut left, mut middle, mut right) = (false, false, false);
         tracing::info!("Mouse trigger poller started (CGEventSourceButtonState)");
         // No tap, no permission gate — the poller is always live.
@@ -1449,7 +1451,9 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Give the background thread up to 2s to report tap status, then emit to frontend.
         let tap_ok = tokio::task::spawn_blocking(move || {
-            tap_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or(false)
+            tap_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap_or(false)
         })
         .await
         .unwrap_or(false);
@@ -1474,8 +1478,12 @@ fn start_mouse_listener(app_handle: tauri::AppHandle) {
             let raw = match event.event_type {
                 rdev::EventType::ButtonPress(rdev::Button::Left) => Some(MouseRawEvent::LeftDown),
                 rdev::EventType::ButtonRelease(rdev::Button::Left) => Some(MouseRawEvent::LeftUp),
-                rdev::EventType::ButtonPress(rdev::Button::Middle) => Some(MouseRawEvent::MiddleDown),
-                rdev::EventType::ButtonRelease(rdev::Button::Middle) => Some(MouseRawEvent::MiddleUp),
+                rdev::EventType::ButtonPress(rdev::Button::Middle) => {
+                    Some(MouseRawEvent::MiddleDown)
+                }
+                rdev::EventType::ButtonRelease(rdev::Button::Middle) => {
+                    Some(MouseRawEvent::MiddleUp)
+                }
                 rdev::EventType::ButtonPress(rdev::Button::Right) => Some(MouseRawEvent::RightDown),
                 rdev::EventType::ButtonRelease(rdev::Button::Right) => Some(MouseRawEvent::RightUp),
                 _ => None,
@@ -1960,7 +1968,9 @@ pub fn run() {
             app.manage(CloseToTrayCache(Arc::new(Mutex::new(
                 initial_config.close_to_tray,
             ))));
-            app.manage(TranslateHotkeyCache(Arc::new(Mutex::new(translate_signature))));
+            app.manage(TranslateHotkeyCache(Arc::new(Mutex::new(
+                translate_signature,
+            ))));
             app.manage(AgentHotkeyCache(Arc::new(Mutex::new(agent_signature))));
             app.manage(SessionTokenStore(Arc::new(Mutex::new(String::new()))));
             app.manage(MouseTriggersEnabledCache(Arc::new(Mutex::new(
