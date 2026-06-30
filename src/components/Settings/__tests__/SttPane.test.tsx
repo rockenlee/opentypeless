@@ -3,8 +3,12 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { SttPane } from '../SttPane'
 import * as tauri from '../../../lib/tauri'
 
-// Mock Tauri
-vi.mock('../../../lib/tauri')
+// Mock Tauri — explicit factory so all exports used by SttPane are guaranteed mock fns
+vi.mock('../../../lib/tauri', () => ({
+  benchSttConnection: vi.fn(),
+  testAudioCapture: vi.fn(),
+  listInputDevices: vi.fn().mockResolvedValue([]),
+}))
 
 // Mock i18n
 vi.mock('react-i18next', () => ({
@@ -267,7 +271,7 @@ describe('SttPane', () => {
     it('updates config when language changes', () => {
       render(<SttPane />)
       const selects = screen.getAllByRole('combobox')
-      const languageSelect = selects[1]
+      const languageSelect = selects[2] // Third select is language (after provider and microphone)
 
       fireEvent.change(languageSelect, { target: { value: 'zh' } })
 
