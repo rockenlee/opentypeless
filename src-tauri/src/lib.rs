@@ -884,6 +884,45 @@ async fn remove_dictionary_entry(
     state.remove(id).await.map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct BulkImportResult {
+    imported: usize,
+    skipped_words: Vec<String>,
+}
+
+#[tauri::command]
+async fn bulk_add_dictionary_entries(
+    state: tauri::State<'_, storage::DictionaryStore>,
+    entries: Vec<(String, Option<String>)>,
+) -> Result<BulkImportResult, String> {
+    // Backend validation: trim, reject empty/overlong fields
+    let mut valid: Vec<(String, Option<String>)> = Vec::new();
+    for (i, (word, pron)) in entries.into_iter().enumerate() {
+        let w = word.trim().to_string();
+        if w.is_empty() {
+            return Err(format!("Entry {}: word is empty", i + 1));
+        }
+        if w.chars().count() > 100 {
+            return Err(format!("Entry {}: word too long (max 100 chars)", i + 1));
+        }
+        let p = pron.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if let Some(ref pv) = p {
+            if pv.chars().count() > 100 {
+                return Err(format!(
+                    "Entry {}: pronunciation too long (max 100 chars)",
+                    i + 1
+                ));
+            }
+        }
+        valid.push((w, p));
+    }
+    let (imported, skipped_words) = state.bulk_add(&valid).await.map_err(|e| e.to_string())?;
+    Ok(BulkImportResult {
+        imported,
+        skipped_words,
+    })
+}
+
 #[tauri::command]
 async fn set_session_token(
     state: tauri::State<'_, SessionTokenStore>,
@@ -2198,6 +2237,7 @@ pub fn run() {
             get_dictionary,
             add_dictionary_entry,
             remove_dictionary_entry,
+            bulk_add_dictionary_entries,
             update_hotkey,
             update_translate_hotkey,
             update_agent_hotkey,

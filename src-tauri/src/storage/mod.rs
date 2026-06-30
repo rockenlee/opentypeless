@@ -408,6 +408,41 @@ impl DictionaryStore {
         Ok(entries)
     }
 
+    /// Bulk-add dictionary entries in a single transaction.
+    /// Skips entries whose `word` already exists in the DB (no overwrite).
+    /// Returns (imported_count, skipped_duplicate_words).
+    pub async fn bulk_add(
+        &self,
+        entries: &[(String, Option<String>)],
+    ) -> Result<(usize, Vec<String>)> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.unchecked_transaction()?;
+
+        let mut imported = 0usize;
+        let mut skipped: Vec<String> = Vec::new();
+
+        for (word, pronunciation) in entries {
+            // Check if word already exists
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM dictionary WHERE word = ?1)",
+                rusqlite::params![word],
+                |row| row.get(0),
+            )?;
+            if exists {
+                skipped.push(word.clone());
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO dictionary (word, pronunciation) VALUES (?1, ?2)",
+                rusqlite::params![word, pronunciation.as_deref()],
+            )?;
+            imported += 1;
+        }
+
+        tx.commit()?;
+        Ok((imported, skipped))
+    }
+
     pub async fn words(&self) -> Vec<String> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = match conn.prepare("SELECT word FROM dictionary") {

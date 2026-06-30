@@ -134,6 +134,17 @@ export async function removeDictionaryEntry(id: number): Promise<void> {
   return invoke('remove_dictionary_entry', { id })
 }
 
+export interface BulkImportResult {
+  imported: number
+  skipped_words: string[]
+}
+
+export async function bulkAddDictionaryEntries(
+  entries: [string, string | null][],
+): Promise<BulkImportResult> {
+  return invoke('bulk_add_dictionary_entries', { entries })
+}
+
 // Auto-start
 export async function setAutoStart(enabled: boolean): Promise<void> {
   return invoke('set_auto_start', { enabled })

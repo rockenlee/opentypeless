@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trash2, Plus } from 'lucide-react'
+import { Trash2, Plus, Upload } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { addDictionaryEntry, removeDictionaryEntry, getDictionary } from '../../lib/tauri'
 import { toast } from '../Toast'
+import { BulkImportDialog } from './BulkImportDialog'
 
 export function DictionaryPane() {
   const dictionary = useAppStore((s) => s.dictionary)
@@ -11,6 +12,7 @@ export function DictionaryPane() {
   const { t } = useTranslation()
   const [word, setWord] = useState('')
   const [pronunciation, setPronunciation] = useState('')
+  const [showBulkImport, setShowBulkImport] = useState(false)
 
   const handleAdd = async () => {
     if (!word.trim()) return
@@ -60,6 +62,13 @@ export function DictionaryPane() {
           <Plus size={14} />
           {t('dictionary.add')}
         </button>
+        <button
+          onClick={() => setShowBulkImport(true)}
+          className="px-4 py-2.5 bg-bg-secondary text-text-primary border border-border rounded-[10px] text-[13px] cursor-pointer hover:bg-bg-tertiary transition-colors flex items-center gap-1.5"
+        >
+          <Upload size={14} />
+          {t('dictionary.bulkImport.trigger')}
+        </button>
       </div>
 
       <div className="border border-border rounded-[10px] overflow-hidden">
@@ -104,6 +113,8 @@ export function DictionaryPane() {
           </tbody>
         </table>
       </div>
+
+      {showBulkImport && <BulkImportDialog onClose={() => setShowBulkImport(false)} />}
     </div>
   )
 }
