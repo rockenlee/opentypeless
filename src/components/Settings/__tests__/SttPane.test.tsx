@@ -35,6 +35,7 @@ const mockAppStore = {
     stt_provider: 'deepgram' as string,
     stt_api_key: '',
     stt_language: 'en',
+    preferred_input_device: '',
   },
   updateConfig: vi.fn(),
   sttTestStatus: 'idle' as 'idle' | 'testing' | 'success' | 'error',
@@ -73,6 +74,7 @@ describe('SttPane', () => {
       stt_provider: 'deepgram',
       stt_api_key: '',
       stt_language: 'en',
+      preferred_input_device: '',
     }
     mockAppStore.sttTestStatus = 'idle'
     mockAppStore.sttLatencyMs = null
@@ -258,7 +260,7 @@ describe('SttPane', () => {
     it('renders language dropdown with current value', () => {
       render(<SttPane />)
       const selects = screen.getAllByRole('combobox')
-      const languageSelect = selects[1] // Second select is language
+      const languageSelect = selects[2] // Third select is language (after provider and microphone)
       expect(languageSelect).toHaveValue('en')
     })
 
