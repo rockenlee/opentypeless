@@ -3,10 +3,20 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { SttPane } from '../SttPane'
 import * as tauri from '../../../lib/tauri'
 
-// Mock Tauri — explicit factory so all exports used by SttPane are guaranteed mock fns
+// Mock the underlying Tauri IPC so any un-mocked tauri.ts function won't crash.
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}))
+
+// Explicit mocks for every tauri.ts export that SttPane uses.
 vi.mock('../../../lib/tauri', () => ({
-  benchSttConnection: vi.fn(),
-  testAudioCapture: vi.fn(),
+  benchSttConnection: vi.fn().mockResolvedValue(0),
+  testAudioCapture: vi.fn().mockResolvedValue({
+    duration_ms: 0,
+    chunks: 0,
+    bytes: 0,
+    max_volume: 0,
+  }),
   listInputDevices: vi.fn().mockResolvedValue([]),
 }))
 

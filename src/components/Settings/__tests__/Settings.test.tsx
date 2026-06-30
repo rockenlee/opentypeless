@@ -73,6 +73,9 @@ vi.mock('react-i18next', async (importOriginal) => {
 })
 
 // ─── Mock Tauri plugins / lib/tauri ──────────────────────────────────────────
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('../../../lib/tauri', () => ({
   updateHotkey: vi.fn().mockResolvedValue(undefined),
   pauseHotkey: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +88,15 @@ vi.mock('../../../lib/tauri', () => ({
   removeDictionaryEntry: vi.fn().mockResolvedValue(undefined),
   getDictionary: vi.fn().mockResolvedValue([]),
   updateConfig: vi.fn().mockResolvedValue(undefined),
+  benchSttConnection: vi.fn().mockResolvedValue(0),
+  testAudioCapture: vi.fn().mockResolvedValue({
+    duration_ms: 0,
+    chunks: 0,
+    bytes: 0,
+    max_volume: 0,
+  }),
+  listInputDevices: vi.fn().mockResolvedValue([]),
+  bulkAddDictionaryEntries: vi.fn().mockResolvedValue({ imported: 0, skipped_words: [] }),
 }))
 
 // ─── Mock @tauri-apps/plugin-opener ─────────────────────────────────────────
