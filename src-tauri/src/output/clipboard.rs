@@ -30,7 +30,7 @@ impl ClipboardOutput {
 impl TextOutput for ClipboardOutput {
     async fn type_text(&self, text: &str) -> Result<()> {
         let text = text.to_string();
-        let app_name = self.app_name.clone();
+        let _app_name = self.app_name.clone();
         tokio::task::spawn_blocking(move || {
             let mut clipboard = arboard::Clipboard::new()
                 .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
@@ -54,7 +54,7 @@ impl TextOutput for ClipboardOutput {
             {
                 tracing::debug!(
                     "Clipboard: Cmd+V into current frontmost app (recorded in '{}')",
-                    app_name
+                    _app_name
                 );
 
                 // Send Cmd+V via System Events.

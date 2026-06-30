@@ -81,6 +81,9 @@ describe('SttPane', () => {
 
     // Clear all mock function calls
     vi.clearAllMocks()
+
+    // Ensure listInputDevices returns a resolved promise (auto-mock returns undefined)
+    vi.mocked(tauri.listInputDevices).mockResolvedValue([])
   })
 
   afterEach(() => {
