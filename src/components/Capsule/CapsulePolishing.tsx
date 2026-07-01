@@ -1,11 +1,22 @@
 import { motion, useReducedMotion } from 'framer-motion'
+import { useTranslation } from 'react-i18next'
 import { X } from 'lucide-react'
 import { abortRecording } from '../../lib/tauri'
 import { useAppStore } from '../../stores/appStore'
 
 export function CapsulePolishing() {
   const reduced = useReducedMotion()
+  const { t } = useTranslation()
   const agentStatus = useAppStore((s) => s.agentStatus)
+  const editSelection = useAppStore((s) => s.editSelection)
+  const label = editSelection.active
+    ? editSelection.words > 0
+      ? t('editSelection.rewritingSized', {
+          chars: editSelection.chars,
+          words: editSelection.words,
+        })
+      : t('editSelection.rewriting')
+    : agentStatus || 'Thinking...'
 
   const handleCancel = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -34,9 +45,7 @@ export function CapsulePolishing() {
           />
         ))}
       </div>
-      <p className="text-[11px] text-white leading-snug truncate flex-1 min-w-0">
-        {agentStatus || 'Thinking...'}
-      </p>
+      <p className="text-[11px] text-white leading-snug truncate flex-1 min-w-0">{label}</p>
       <button
         onClick={handleCancel}
         aria-label="Cancel polishing"

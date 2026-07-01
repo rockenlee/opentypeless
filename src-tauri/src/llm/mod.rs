@@ -35,6 +35,12 @@ pub struct PolishRequest {
     pub translate_enabled: bool,
     pub target_lang: String,
     pub selected_text: Option<String>,
+    /// Edit Selection mode: `raw_text` is an EDIT INSTRUCTION applied to
+    /// `selected_text`, not dictation to clean up. Uses a dedicated prompt that
+    /// does not inherit the dictation "never rewrite" rules. Defaults to false
+    /// so normal dictation is unaffected.
+    #[serde(default)]
+    pub edit_selection: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

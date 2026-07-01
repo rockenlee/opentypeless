@@ -6,6 +6,7 @@ import {
   updateHotkey,
   updateTranslateHotkey,
   updateAgentHotkey,
+  updateEditSelectionHotkey,
   pauseHotkey,
   resumeHotkey,
   checkAccessibilityPermission,
@@ -189,7 +190,7 @@ const STANDALONE_KEYS = new Set([
   'F12',
 ])
 
-type HotkeyKind = 'recording' | 'translate' | 'agent'
+type HotkeyKind = 'recording' | 'translate' | 'agent' | 'editSelection'
 
 function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
   const config = useAppStore((s) => s.config)
@@ -206,7 +207,9 @@ function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
       ? config.translate_hotkey
       : kind === 'agent'
         ? config.agent_hotkey
-        : config.hotkey
+        : kind === 'editSelection'
+          ? config.edit_selection_hotkey
+          : config.hotkey
   const placeholder = currentValue || t('settings.notSet')
 
   const confirmHotkey = useCallback(
@@ -219,7 +222,9 @@ function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
           ? updateTranslateHotkey
           : kind === 'agent'
             ? updateAgentHotkey
-            : updateHotkey
+            : kind === 'editSelection'
+              ? updateEditSelectionHotkey
+              : updateHotkey
       persist(hotkey)
         .then(() => {
           updateConfig(
@@ -227,7 +232,9 @@ function HotkeyRecorder({ kind = 'recording' }: { kind?: HotkeyKind }) {
               ? { translate_hotkey: hotkey }
               : kind === 'agent'
                 ? { agent_hotkey: hotkey }
-                : { hotkey },
+                : kind === 'editSelection'
+                  ? { edit_selection_hotkey: hotkey }
+                  : { hotkey },
           )
           setPending(null)
           toast(`Hotkey saved: ${hotkey}`, 'success')
@@ -430,6 +437,13 @@ export function GeneralPane() {
       <Section title={t('settings.agentHotkey')}>
         <p className="text-[11px] text-text-tertiary mb-2">{t('settings.agentHotkeyDesc')}</p>
         <HotkeyRecorder kind="agent" />
+      </Section>
+
+      <Section title={t('settings.editSelectionHotkey')}>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          {t('settings.editSelectionHotkeyDesc')}
+        </p>
+        <HotkeyRecorder kind="editSelection" />
       </Section>
 
       <Section title={t('settings.mouseTrigger')}>

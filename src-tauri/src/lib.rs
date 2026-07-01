@@ -49,6 +49,11 @@ struct TranslateHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
 /// of trigger-word prefix. Same comparison rationale as `TranslateHotkeyCache`.
 struct AgentHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
 
+/// Cached (modifiers, key) of the edit-selection hotkey. Pressing this starts a
+/// recording whose transcript is applied to the current selection as an edit
+/// instruction (Edit Selection mode). Same comparison rationale as above.
+struct EditSelectionHotkeyCache(Arc<Mutex<Option<(Modifiers, Code)>>>);
+
 /// Cached mouse trigger settings to avoid disk I/O on every mouse event.
 struct MouseTriggersEnabledCache(Arc<Mutex<bool>>);
 struct MouseMiddleClickActionCache(Arc<Mutex<String>>);
@@ -1008,6 +1013,24 @@ fn reregister_all_hotkeys(
     if let Some(cache) = app.try_state::<AgentHotkeyCache>() {
         *cache.0.lock().unwrap_or_else(|e| e.into_inner()) = agent_signature;
     }
+
+    let edit_selection = if config.edit_selection_hotkey.trim().is_empty() {
+        None
+    } else {
+        parse_hotkey(&config.edit_selection_hotkey)
+    };
+    let edit_selection_signature = edit_selection.as_ref().map(|s| (s.mods, s.key));
+    if let Some(es) = edit_selection {
+        if let Err(e) = app.global_shortcut().register(es) {
+            tracing::warn!(
+                "Failed to register edit-selection hotkey '{}' (may be occupied): {e}",
+                config.edit_selection_hotkey
+            );
+        }
+    }
+    if let Some(cache) = app.try_state::<EditSelectionHotkeyCache>() {
+        *cache.0.lock().unwrap_or_else(|e| e.into_inner()) = edit_selection_signature;
+    }
     Ok(())
 }
 
@@ -1072,6 +1095,36 @@ async fn update_agent_hotkey(
         .map_err(|e| e.to_string())?;
     reregister_all_hotkeys(&app, &config)?;
     Ok(())
+}
+
+#[tauri::command]
+async fn update_edit_selection_hotkey(
+    app: tauri::AppHandle,
+    config_state: tauri::State<'_, storage::ConfigManager>,
+    hotkey: String,
+) -> Result<(), String> {
+    // Empty string is valid → disables the edit-selection hotkey entirely.
+    if !hotkey.trim().is_empty() && parse_hotkey(&hotkey).is_none() {
+        return Err(format!("Invalid hotkey: {}", hotkey));
+    }
+
+    let mut config = config_state.load().await.map_err(|e| e.to_string())?;
+    config.edit_selection_hotkey = hotkey;
+    config_state
+        .save(&config)
+        .await
+        .map_err(|e| e.to_string())?;
+    reregister_all_hotkeys(&app, &config)?;
+    Ok(())
+}
+
+/// Surface an Edit Selection outcome as a native OS notification. The frontend
+/// already localized `body`; we notify because the user is focused on another
+/// app during Edit Selection and would otherwise miss the backgrounded toast —
+/// most importantly the clipboard-fallback guidance.
+#[tauri::command]
+fn notify_edit_selection(body: String) {
+    crate::notify::show_edit_selection_notification(&body);
 }
 
 /// Temporarily unregister all global shortcuts so the webview can capture key events.
@@ -1625,6 +1678,41 @@ fn build_shortcut_handler(
             return;
         }
 
+        // Edit-selection hotkey: start a recording whose transcript is applied
+        // to the current selection as an edit instruction, then replaces the
+        // selection in-place (Edit Selection mode). Toggle semantics: press to
+        // start when Idle, press again to stop. Only Pressed matters here.
+        let is_edit_selection_shortcut = handle
+            .try_state::<EditSelectionHotkeyCache>()
+            .and_then(|cache| {
+                cache
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|(mods, key)| *mods == shortcut.mods && *key == shortcut.key)
+            })
+            .unwrap_or(false);
+        if is_edit_selection_shortcut {
+            if event.state == ShortcutState::Pressed {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let pipeline = handle.state::<pipeline::PipelineHandle>();
+                    if pipeline.current_state() == pipeline::PipelineState::Idle {
+                        tracing::info!("Edit-selection hotkey: starting recording");
+                        if let Err(e) = pipeline.start_for_edit_selection().await {
+                            tracing::error!("Edit-selection start failed: {}", e);
+                            let _ = handle.emit("pipeline:error", e.to_string());
+                        }
+                    } else if let Err(e) = pipeline.stop().await {
+                        tracing::error!("Edit-selection stop failed: {}", e);
+                        let _ = handle.emit("pipeline:error", e.to_string());
+                    }
+                });
+            }
+            return;
+        }
+
         // Otherwise this is the recording shortcut — original behavior.
         match event.state {
             ShortcutState::Pressed => {
@@ -1958,6 +2046,14 @@ pub fn run() {
                 parse_hotkey(&initial_config.agent_hotkey)
             };
             let agent_signature = agent_shortcut.as_ref().map(|s| (s.mods, s.key));
+            let edit_selection_shortcut = if initial_config.edit_selection_hotkey.trim().is_empty()
+            {
+                None
+            } else {
+                parse_hotkey(&initial_config.edit_selection_hotkey)
+            };
+            let edit_selection_signature =
+                edit_selection_shortcut.as_ref().map(|s| (s.mods, s.key));
 
             app.manage(config_manager);
             app.manage(history_store);
@@ -1973,6 +2069,9 @@ pub fn run() {
                 translate_signature,
             ))));
             app.manage(AgentHotkeyCache(Arc::new(Mutex::new(agent_signature))));
+            app.manage(EditSelectionHotkeyCache(Arc::new(Mutex::new(
+                edit_selection_signature,
+            ))));
             app.manage(SessionTokenStore(Arc::new(Mutex::new(String::new()))));
             app.manage(MouseTriggersEnabledCache(Arc::new(Mutex::new(
                 initial_config.mouse_triggers_enabled,
@@ -2029,6 +2128,14 @@ pub fn run() {
                     tracing::warn!(
                         "Failed to register agent hotkey '{}' (may be occupied): {e}",
                         initial_config.agent_hotkey
+                    );
+                }
+            }
+            if let Some(es) = edit_selection_shortcut {
+                if let Err(e) = app.global_shortcut().register(es) {
+                    tracing::warn!(
+                        "Failed to register edit-selection hotkey '{}' (may be occupied): {e}",
+                        initial_config.edit_selection_hotkey
                     );
                 }
             }
@@ -2252,6 +2359,8 @@ pub fn run() {
             update_hotkey,
             update_translate_hotkey,
             update_agent_hotkey,
+            update_edit_selection_hotkey,
+            notify_edit_selection,
             update_mouse_triggers,
             pause_hotkey,
             resume_hotkey,

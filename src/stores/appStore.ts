@@ -87,6 +87,9 @@ export interface AppConfig {
   /** Hotkey that starts/stops a forced Hermes-agent recording (no trigger
    *  word required, whole transcript becomes the prompt). Empty = unbound. */
   agent_hotkey: string
+  /** Hotkey for Edit Selection: the transcript is applied to the current
+   *  selection as an edit instruction and replaces it in-place. Empty = unbound. */
+  edit_selection_hotkey: string
   /** Pause locally-playing music / podcasts / video on record start. */
   auto_pause_media: boolean
   /** Show a native macOS notification when an agent run completes. */
@@ -174,6 +177,10 @@ interface AppState {
   pipelineError: string | null
   setPipelineError: (error: string | null) => void
 
+  // Edit Selection mode visibility (null = not in Edit Selection)
+  editSelection: { active: boolean; chars: number; words: number }
+  setEditSelection: (s: { active: boolean; chars: number; words: number }) => void
+
   // macOS Accessibility permission
   accessibilityTrusted: boolean
   setAccessibilityTrusted: (trusted: boolean) => void
@@ -229,6 +236,7 @@ const defaultConfig: AppConfig = {
   agent_cwd: '',
   translate_hotkey: isMac ? 'Alt+Shift+.' : 'Ctrl+Shift+.',
   agent_hotkey: isMac ? 'Alt+Shift+/' : 'Ctrl+Shift+/',
+  edit_selection_hotkey: isMac ? 'Alt+Shift+E' : 'Ctrl+Shift+E',
   auto_pause_media: true,
   agent_notification: true,
   mouse_triggers_enabled: false,
@@ -297,6 +305,9 @@ export const useAppStore = create<AppState>((set) => ({
 
   pipelineError: null,
   setPipelineError: (pipelineError) => set({ pipelineError }),
+
+  editSelection: { active: false, chars: 0, words: 0 },
+  setEditSelection: (editSelection) => set({ editSelection }),
 
   accessibilityTrusted: true,
   setAccessibilityTrusted: (accessibilityTrusted) => set({ accessibilityTrusted }),

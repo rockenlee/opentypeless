@@ -102,6 +102,31 @@
     "exit": "Exit",
     "accessibilityRequired": "Accessibility needed — open Settings"
   },
+  "editSelection": {
+    "badge": "Editing selection",
+    "rewriting": "Rewriting selection…",
+    "rewritingSized": "Rewriting selection · {{words}} words / {{chars}} chars",
+    "replacing": "Replacing selection…",
+    "result": {
+      "success": "Selection replaced · press Cmd/Ctrl+Z to undo"
+    },
+    "error": {
+      "no_speech": "No speech detected. Say how to change the selection (e.g. 'make it shorter') and try again.",
+      "permission_capture": "Can't read the selection — grant Accessibility permission so OpenTypeless can read and replace selected text, then try again.",
+      "no_selection": "No text selected. Select the text you want to edit first, then try again.",
+      "too_long": "Selection is too long. Shorten it (max 1000 words / 6000 characters) and try again.",
+      "llm_disabled": "Edit Selection needs the AI model. Turn on polishing and set an API key in Settings.",
+      "llm_failed": "The AI model couldn't process the edit. Nothing was changed — please try again.",
+      "no_edit": "Couldn't recognise an edit instruction. Try again and say how to change the text (e.g. 'make it shorter').",
+      "no_result": "The model returned no result. Nothing was changed.",
+      "focus_changed": "Focus moved to '{{app}}', so nothing was replaced. The result is on the clipboard — switch back and paste.",
+      "permission_replace": "Accessibility permission is required to replace the selection. The result is on the clipboard — paste it manually.",
+      "selection_lost": "The selection was lost or changed before it could be replaced. The result is on the clipboard — reselect and paste.",
+      "readonly": "'{{app}}' didn't accept the replacement (the field may be read-only). The result is on the clipboard — paste it where you can edit.",
+      "paste_failed": "Couldn't paste into '{{app}}' (this may be a permission issue). The result is on the clipboard — paste it manually.",
+      "generic": "Edit Selection failed. Nothing was replaced."
+    }
+  },
   "settings": {
     "title": "Settings",
     "general": "General",
@@ -123,6 +148,8 @@
     "translateOff": "Translate mode is currently OFF",
     "agentHotkey": "Agent Hotkey",
     "agentHotkeyDesc": "Press to start a forced Hermes-agent recording — the whole transcript becomes the prompt (no \"hermes\" / \"agent\" trigger word required). Result is shown in the agent panel.",
+    "editSelectionHotkey": "Edit Selection Hotkey",
+    "editSelectionHotkeyDesc": "Select text in any editable field, press to start, speak an instruction (\"make it shorter\", \"fix typos\", \"translate to English\"), then press again. The result replaces your selection in-place. If focus moved, permission is missing, or the paste fails, nothing is replaced and the result is copied to the clipboard instead.",
     "mouseTrigger": "Mouse Middle-Click Triggers",
     "mouseTriggerDesc": "Map middle-click gestures to actions. Takes effect globally.",
     "enableMouseTriggers": "Enable middle-click triggers",

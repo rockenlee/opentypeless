@@ -1,11 +1,15 @@
 import { motion, useReducedMotion } from 'framer-motion'
+import { useTranslation } from 'react-i18next'
 import { X } from 'lucide-react'
 import { abortRecording } from '../../lib/tauri'
+import { useAppStore } from '../../stores/appStore'
 import { Waveform } from './Waveform'
 import { DurationTimer } from './DurationTimer'
 
 export function CapsuleRecording() {
   const reduced = useReducedMotion()
+  const { t } = useTranslation()
+  const editSelection = useAppStore((s) => s.editSelection)
 
   const handleCancel = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -24,6 +28,11 @@ export function CapsuleRecording() {
         animate={reduced ? undefined : { opacity: [1, 0.5, 1] }}
         transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
       />
+      {editSelection.active && (
+        <span className="text-[11px] text-white font-medium whitespace-nowrap flex-shrink-0">
+          {t('editSelection.badge')}
+        </span>
+      )}
       <Waveform />
       <div className="flex-1" />
       <DurationTimer />

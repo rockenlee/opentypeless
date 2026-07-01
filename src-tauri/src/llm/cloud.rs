@@ -46,13 +46,17 @@ impl LlmProvider for CloudLlmProvider {
             .as_ref()
             .is_some_and(|s| !s.trim().is_empty());
 
-        let system_prompt = prompt::build_system_prompt(
-            req.app_type,
-            &req.dictionary,
-            req.translate_enabled,
-            &req.target_lang,
-            has_selected_text,
-        );
+        let system_prompt = if req.edit_selection {
+            prompt::build_edit_selection_prompt()
+        } else {
+            prompt::build_system_prompt(
+                req.app_type,
+                &req.dictionary,
+                req.translate_enabled,
+                &req.target_lang,
+                has_selected_text,
+            )
+        };
 
         let mut messages = vec![serde_json::json!({ "role": "system", "content": system_prompt })];
         if has_selected_text {
@@ -61,9 +65,16 @@ impl LlmProvider for CloudLlmProvider {
                 "content": format!("<selected_text>\n{}\n</selected_text>", req.selected_text.as_ref().unwrap())
             }));
         }
+        // In Edit Selection mode the voice input is an EDIT INSTRUCTION, so tag
+        // it as <instruction>; normal dictation stays <transcription>.
+        let input_tag = if req.edit_selection {
+            "instruction"
+        } else {
+            "transcription"
+        };
         messages.push(serde_json::json!({
             "role": "user",
-            "content": format!("<transcription>\n{}\n</transcription>", req.raw_text)
+            "content": format!("<{tag}>\n{}\n</{tag}>", req.raw_text, tag = input_tag)
         }));
 
         let api_base_url = crate::api_base_url();

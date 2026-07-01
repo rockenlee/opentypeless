@@ -61,6 +61,14 @@ pub struct AppConfig {
     /// the result is shown in the agent-result panel. Empty disables.
     #[serde(default = "default_agent_hotkey")]
     pub agent_hotkey: String,
+    /// Hotkey for "Edit Selection / 选区语音改写": start/stop a recording whose
+    /// transcript is an INSTRUCTION applied to the currently-selected text. The
+    /// LLM result replaces the selection in-place when the target app/window is
+    /// unchanged; otherwise it falls back to the clipboard with a visible notice.
+    /// Distinct from `selected_text_enabled` (which only adds selection as LLM
+    /// context to normal dictation). Empty disables.
+    #[serde(default = "default_edit_selection_hotkey")]
+    pub edit_selection_hotkey: String,
 
     /// On record start, attempt to pause locally-playing audio (Music,
     /// Spotify, Podcasts, QuickTime, VLC, IINA, QQ Music) so it doesn't
@@ -141,6 +149,18 @@ fn default_agent_hotkey() -> String {
     }
 }
 
+fn default_edit_selection_hotkey() -> String {
+    // Mnemonic: "E" = Edit the selection.
+    #[cfg(target_os = "macos")]
+    {
+        "Alt+Shift+E".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Ctrl+Shift+E".to_string()
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -176,6 +196,7 @@ impl Default for AppConfig {
             agent_cwd: String::new(),
             translate_hotkey: default_translate_hotkey(),
             agent_hotkey: default_agent_hotkey(),
+            edit_selection_hotkey: default_edit_selection_hotkey(),
             auto_pause_media: true,
             agent_notification: true,
             mouse_triggers_enabled: false,

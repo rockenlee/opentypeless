@@ -97,6 +97,17 @@ export async function updateAgentHotkey(hotkey: string): Promise<void> {
   return invoke('update_agent_hotkey', { hotkey })
 }
 
+export async function updateEditSelectionHotkey(hotkey: string): Promise<void> {
+  return invoke('update_edit_selection_hotkey', { hotkey })
+}
+
+/** Show a native OS notification for an Edit Selection outcome. Used because the
+ *  user is focused on another app during Edit Selection and would miss the
+ *  in-app toast — especially the clipboard-fallback guidance. */
+export async function notifyEditSelection(body: string): Promise<void> {
+  return invoke('notify_edit_selection', { body })
+}
+
 export async function pauseHotkey(): Promise<void> {
   return invoke('pause_hotkey')
 }

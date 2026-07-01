@@ -1,13 +1,18 @@
 import { motion, useReducedMotion } from 'framer-motion'
+import { useTranslation } from 'react-i18next'
 import { Loader2, X } from 'lucide-react'
 import { abortRecording } from '../../lib/tauri'
 import { useAppStore } from '../../stores/appStore'
 
 export function CapsuleProcessing() {
   const partialTranscript = useAppStore((s) => s.partialTranscript)
+  const editSelection = useAppStore((s) => s.editSelection)
   const reduced = useReducedMotion()
+  const { t } = useTranslation()
 
-  const displayText = partialTranscript || 'Transcribing...'
+  const displayText = editSelection.active
+    ? t('editSelection.badge')
+    : partialTranscript || 'Transcribing...'
 
   const handleCancel = async (e: React.MouseEvent) => {
     e.stopPropagation()

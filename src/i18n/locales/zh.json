@@ -102,6 +102,31 @@
     "exit": "退出",
     "accessibilityRequired": "需要辅助功能权限 — 请打开设置"
   },
+  "editSelection": {
+    "badge": "正在编辑选区",
+    "rewriting": "正在改写选区…",
+    "rewritingSized": "正在改写选区 · 已选 {{words}} 词 / {{chars}} 字",
+    "replacing": "正在替换选区…",
+    "result": {
+      "success": "已替换选区 · 可按 Cmd/Ctrl+Z 撤销"
+    },
+    "error": {
+      "no_speech": "未检测到语音。请说出如何修改选区（例如“改短一点”）后重试。",
+      "permission_capture": "无法读取选区 — 请授予辅助功能（Accessibility）权限，让 OpenTypeless 能读取并替换选中文字后重试。",
+      "no_selection": "未选中文字。请先选中要修改的文字再试。",
+      "too_long": "选区过长。请缩短后再试（上限 1000 词 / 6000 字）。",
+      "llm_disabled": "选区改写需要 AI 模型。请在设置中开启润色并配置 API Key。",
+      "llm_failed": "AI 模型处理失败，未做任何修改。请重试。",
+      "no_edit": "未能识别修改指令。请重试并说明如何修改（例如“改短一点”）。",
+      "no_result": "模型未返回结果，未做任何修改。",
+      "focus_changed": "焦点已切换到「{{app}}」，未替换选区。结果已复制到剪贴板 — 切回后可粘贴。",
+      "permission_replace": "替换选区需要辅助功能（Accessibility）权限。结果已复制到剪贴板 — 请手动粘贴。",
+      "selection_lost": "替换前选区已丢失或改变，未替换。结果已复制到剪贴板 — 重新选中后粘贴。",
+      "readonly": "「{{app}}」未接受替换（该输入框可能是只读的），未做修改。结果已复制到剪贴板 — 请粘贴到可编辑处。",
+      "paste_failed": "无法粘贴到「{{app}}」（可能是权限问题）。结果已复制到剪贴板 — 请手动粘贴。",
+      "generic": "选区改写失败，未替换。"
+    }
+  },
   "settings": {
     "title": "设置",
     "general": "通用",
@@ -123,6 +148,8 @@
     "translateOff": "翻译模式已关闭",
     "agentHotkey": "Agent 快捷键",
     "agentHotkeyDesc": "按下后开始录音，整段话作为 prompt 直接发给 Hermes Agent（不再需要说 \"hermes\" / \"agent\" 等触发词，避免 STT 听错），结果显示在 Agent 面板。",
+    "editSelectionHotkey": "选区改写快捷键",
+    "editSelectionHotkeyDesc": "在任意可编辑文本框中选中一段文字，按下开始，说出修改指令（如\"改短一点\"\"修正错别字\"\"翻译成英文\"），再次按下结束，结果会原位替换你的选区。若焦点已切换、缺少权限或粘贴失败，则不替换，改为把结果复制到剪贴板。",
     "mouseTrigger": "鼠标中键触发",
     "mouseTriggerDesc": "将鼠标中键手势映射到操作，全局生效。",
     "enableMouseTriggers": "启用鼠标中键触发",

@@ -57,3 +57,47 @@ pub fn show_agent_notification(body: &str) {
         let _ = body;
     }
 }
+
+/// Display a system notification for an Edit Selection outcome. During Edit
+/// Selection the user is focused on a THIRD-PARTY app, so the in-app toast (on
+/// the backgrounded main window) and the just-hidden capsule are easy to miss —
+/// especially the clipboard-fallback guidance ("nothing was replaced, the result
+/// is on the clipboard"). `body` is already localized by the frontend. Safe to
+/// call from any thread; spawns its own so it never blocks the command handler.
+pub fn show_edit_selection_notification(body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let mut preview = body.trim().to_string();
+        if preview.chars().count() > 140 {
+            preview = preview.chars().take(137).collect::<String>() + "...";
+        }
+        if preview.is_empty() {
+            return;
+        }
+
+        let escaped_body = preview.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"display notification "{escaped_body}" with title "OpenTypeless" sound name "Pop""#
+        );
+
+        std::thread::spawn(move || {
+            let result = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output();
+            if let Ok(out) = result {
+                if !out.status.success() {
+                    tracing::debug!(
+                        "edit-selection notification osascript exit {:?}: {}",
+                        out.status.code(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = body;
+    }
+}
