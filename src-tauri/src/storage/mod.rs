@@ -97,6 +97,9 @@ pub struct AppConfig {
     /// Action triggered by left + middle button chord.
     #[serde(default = "default_mouse_left_middle_action")]
     pub mouse_left_middle_action: String,
+    /// Action triggered by pressing left + right buttons at the same time.
+    #[serde(default = "default_mouse_left_right_action")]
+    pub mouse_left_right_action: String,
 }
 
 fn default_true() -> bool {
@@ -134,6 +137,10 @@ fn default_mouse_middle_right_action() -> String {
 
 fn default_mouse_left_middle_action() -> String {
     "none".to_string()
+}
+
+fn default_mouse_left_right_action() -> String {
+    "edit_selection".to_string()
 }
 
 fn default_agent_hotkey() -> String {
@@ -204,6 +211,7 @@ impl Default for AppConfig {
             mouse_middle_double_click_action: default_mouse_middle_double_click_action(),
             mouse_middle_right_action: default_mouse_middle_right_action(),
             mouse_left_middle_action: default_mouse_left_middle_action(),
+            mouse_left_right_action: default_mouse_left_right_action(),
         }
     }
 }

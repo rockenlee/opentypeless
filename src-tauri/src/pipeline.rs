@@ -69,8 +69,9 @@ pub fn request_accessibility_permission() -> bool {
 
 /// Delay before capturing selected text to ensure hotkey modifiers are released.
 const SELECTED_TEXT_CAPTURE_DELAY_MS: u64 = 60;
-/// Delay after simulating Ctrl+C to let the clipboard update.
-const CLIPBOARD_COPY_SETTLE_MS: u64 = 100;
+/// Upper bound on polling for the clipboard to change after the synthetic
+/// copy chord. Polled every 20 ms; most apps land the copy within one tick.
+const CLIPBOARD_COPY_TIMEOUT_MS: u64 = 600;
 /// Delay after dispatching the Edit Selection replace paste (Cmd+V) before the
 /// read-only probe re-reads the selection. `output.type_text` only DISPATCHES the
 /// keystroke (osascript returns once it's posted, not applied), so a slow target
@@ -361,14 +362,20 @@ impl PipelineHandle {
             None
         };
 
+        // Poison the clipboard with a unique probe BEFORE the synthetic copy, so
+        // "did Cmd+C land?" is decidable by comparing against the probe instead
+        // of the old clipboard content. Comparing against the backup had a false
+        // negative that users hit constantly: re-editing text the app itself
+        // just pasted (clipboard == selection) looked identical to a blocked
+        // Cmd+C and was wrongly reported as "no selection".
+        const CAPTURE_PROBE: &str = "\u{200b}OpenTypeless-capture-probe\u{200b}";
+        let _ = clipboard.set_text(CAPTURE_PROBE);
+
         #[cfg(target_os = "macos")]
         {
-            let _ = std::process::Command::new("osascript")
-                .args([
-                    "-e",
-                    r#"tell application "System Events" to keystroke "c" using command down"#,
-                ])
-                .output();
+            // Copy the current selection with a low-level Cmd+C (CGEvent, HID tap)
+            // — needs only Accessibility, never Automation / "System Events".
+            crate::post_cmd_key(8); // kVK_ANSI_C
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -382,9 +389,23 @@ impl PipelineHandle {
             }
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(CLIPBOARD_COPY_SETTLE_MS));
-
-        let selected = clipboard.get_text().ok();
+        // Poll until the clipboard changes away from the probe instead of one
+        // fixed sleep: the synthetic Cmd+C lands asynchronously in the target
+        // app, so a single 100 ms nap was a race (slow apps lose, fast apps
+        // waste time). On timeout the probe is still there and the check below
+        // reports "no effect".
+        let copy_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(CLIPBOARD_COPY_TIMEOUT_MS);
+        let mut selected = clipboard.get_text().ok();
+        while selected.as_deref().map(str::trim).unwrap_or("").is_empty()
+            || selected.as_deref() == Some(CAPTURE_PROBE)
+        {
+            if std::time::Instant::now() >= copy_deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            selected = clipboard.get_text().ok();
+        }
 
         // Restore the user's clipboard exactly as we found it: text first, then
         // image; if we could back up neither (empty clipboard, or content arboard
@@ -398,20 +419,17 @@ impl PipelineHandle {
             let _ = clipboard.clear();
         }
 
-        tracing::info!(
-            "Selected text capture: backup_len={}, selected_len={}",
-            backup_text.as_deref().map(|s| s.len()).unwrap_or(0),
-            selected.as_deref().map(|s| s.len()).unwrap_or(0)
-        );
-
-        // On macOS, if Cmd+C had no effect (e.g., no Accessibility permission),
-        // the clipboard is unchanged, so selected == backup — return None to avoid
-        // passing stale clipboard content to the LLM as if it were selected text.
-        match &selected {
+        // If Cmd+C had no effect (nothing selected, or the synthetic key was
+        // dropped for lack of Accessibility permission), the probe is still on
+        // the clipboard — never hand the probe (or emptiness) to the LLM as if
+        // it were selected text. A capture identical to the pre-capture backup
+        // is fine: that's just the user re-editing text they previously copied
+        // or that the app itself pasted.
+        let captured = match &selected {
             Some(s) if !s.trim().is_empty() => {
-                if backup_text.as_deref() == Some(s.as_str()) {
+                if s == CAPTURE_PROBE {
                     tracing::debug!(
-                        "Selected text equals clipboard backup — Cmd+C had no effect, ignoring"
+                        "Clipboard still holds the capture probe — Cmd+C had no effect, ignoring"
                     );
                     None
                 } else {
@@ -419,7 +437,18 @@ impl PipelineHandle {
                 }
             }
             _ => None,
-        }
+        };
+
+        // Log the post-filter length: the raw clipboard read can be the probe
+        // itself, and logging its length as if it were a capture reads like a
+        // phantom selection during debugging.
+        tracing::info!(
+            "Selected text capture: backup_len={}, selected_len={}",
+            backup_text.as_deref().map(|s| s.len()).unwrap_or(0),
+            captured.as_deref().map(|s| s.len()).unwrap_or(0)
+        );
+
+        captured
     }
 
     async fn load_config(&self) -> storage::AppConfig {
@@ -1543,6 +1572,15 @@ impl PipelineHandle {
     /// `status` is "success" | "fallback" | "fail"; `code` maps to an i18n key
     /// (empty for success); `app` is the target app name for interpolation.
     fn emit_edit_result(&self, status: &str, code: &str, app: &str) {
+        // Every Edit Selection outcome in one log line: the fail/fallback lanes
+        // were event-emit-only, which made "why didn't it paste?" undiagnosable
+        // from logs alone.
+        tracing::info!(
+            "Edit Selection result: status={} code={} app='{}'",
+            status,
+            code,
+            app
+        );
         let _ = self.app_handle.emit(
             "edit_selection:result",
             serde_json::json!({ "status": status, "code": code, "app": app }),

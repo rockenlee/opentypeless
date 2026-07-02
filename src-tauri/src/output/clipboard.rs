@@ -57,63 +57,20 @@ impl TextOutput for ClipboardOutput {
                     _app_name
                 );
 
-                // Send Cmd+V via System Events.
-                let paste_script = r#"tell application "System Events" to keystroke "v" using command down"#;
-                let paste_result = std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(paste_script)
-                    .output();
-
-                match paste_result {
-                    Ok(out) if out.status.success() => {}
-                    Ok(out) => {
-                        let stderr = String::from_utf8_lossy(&out.stderr);
-                        let stderr_trim = stderr.trim();
-                        tracing::warn!(
-                            "osascript Cmd+V exit {:?}: {}",
-                            out.status.code(),
-                            stderr_trim
-                        );
-
-                        // macOS error code 1002 from `keystroke`: "not allowed to
-                        // send keystrokes". Despite the name, this is gated on
-                        // ACCESSIBILITY permission, NOT Automation/System Events.
-                        // The user typically grants Automation → System Events
-                        // first and then is baffled why paste still fails.
-                        if stderr_trim.contains("(1002)")
-                            || stderr_trim.contains("not allowed to send keystrokes")
-                        {
-                            // Best-effort: open the Accessibility settings pane
-                            // directly so the user doesn't have to hunt for it.
-                            let _ = std::process::Command::new("open")
-                                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-                                .status();
-                            anyhow::bail!(
-                                "Auto-paste blocked: OpenTypeless needs ACCESSIBILITY permission (not Automation). I've opened System Settings → Privacy & Security → Accessibility — add OpenTypeless and turn it on. Text is on the clipboard; press ⌘V to paste manually for now."
-                            );
-                        }
-
-                        if stderr_trim.contains("1743") || stderr_trim.contains("not authorized") {
-                            anyhow::bail!(
-                                "Auto-paste blocked: OpenTypeless needs 'System Events' Automation permission. Open System Settings → Privacy & Security → Automation → OpenTypeless → enable System Events. Text is on the clipboard; press ⌘V to paste manually for now."
-                            );
-                        }
-
-                        // Surface the actual osascript stderr so the user can show it
-                        // to us if there's a less-common failure mode.
-                        anyhow::bail!(
-                            "Auto-paste failed (exit {:?}): {}. Text is on the clipboard — press ⌘V to paste manually.",
-                            out.status.code(),
-                            if stderr_trim.is_empty() { "(no stderr)" } else { stderr_trim }
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("osascript Cmd+V launch failed: {e}");
-                        anyhow::bail!(
-                            "Auto-paste failed: osascript could not be launched ({e}). Text is on the clipboard — press ⌘V to paste manually."
-                        );
-                    }
+                // Paste with a low-level Cmd+V (CGEvent, HID tap) instead of an
+                // osascript `keystroke` — so we only ever need ACCESSIBILITY, never
+                // the separate Automation / "System Events" permission that used to
+                // confuse users. A CGEvent key is silently dropped without
+                // Accessibility, so check first and surface a clear message.
+                if !crate::pipeline::is_accessibility_trusted() {
+                    let _ = std::process::Command::new("open")
+                        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                        .status();
+                    anyhow::bail!(
+                        "Auto-paste blocked: OpenTypeless needs ACCESSIBILITY permission. I've opened System Settings → Privacy & Security → Accessibility — add OpenTypeless and turn it on. Text is on the clipboard; press ⌘V to paste manually for now."
+                    );
                 }
+                crate::post_cmd_key(9); // kVK_ANSI_V
             }
 
             #[cfg(not(target_os = "macos"))]

@@ -201,6 +201,7 @@ export async function updateMouseTriggers(opts: {
   middleDoubleClickAction: string
   middleRightAction: string
   leftMiddleAction: string
+  leftRightAction: string
 }): Promise<void> {
   return invoke('update_mouse_triggers', {
     enabled: opts.enabled,
@@ -208,5 +209,6 @@ export async function updateMouseTriggers(opts: {
     middleDoubleClickAction: opts.middleDoubleClickAction,
     middleRightAction: opts.middleRightAction,
     leftMiddleAction: opts.leftMiddleAction,
+    leftRightAction: opts.leftRightAction,
   })
 }

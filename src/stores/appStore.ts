@@ -28,7 +28,8 @@ export type LlmProvider =
 export type OutputMode = 'keyboard' | 'clipboard'
 export type HotkeyMode = 'hold' | 'toggle'
 export type Theme = 'light' | 'dark' | 'system'
-export type MouseTriggerAction = 'recording' | 'translate' | 'agent' | 'confirm' | 'none'
+export type MouseTriggerAction =
+  'recording' | 'translate' | 'agent' | 'confirm' | 'edit_selection' | 'none'
 
 export interface HistoryEntry {
   id: number
@@ -100,6 +101,7 @@ export interface AppConfig {
   mouse_middle_double_click_action: MouseTriggerAction
   mouse_middle_right_action: MouseTriggerAction
   mouse_left_middle_action: MouseTriggerAction
+  mouse_left_right_action: MouseTriggerAction
 }
 
 export type TestStatus = 'idle' | 'testing' | 'success' | 'error'
@@ -244,6 +246,7 @@ const defaultConfig: AppConfig = {
   mouse_middle_double_click_action: 'agent' as MouseTriggerAction,
   mouse_middle_right_action: 'translate' as MouseTriggerAction,
   mouse_left_middle_action: 'none' as MouseTriggerAction,
+  mouse_left_right_action: 'edit_selection' as MouseTriggerAction,
 }
 
 export const useAppStore = create<AppState>((set) => ({

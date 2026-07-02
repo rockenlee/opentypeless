@@ -60,6 +60,7 @@ struct MouseMiddleClickActionCache(Arc<Mutex<String>>);
 struct MouseMiddleDoubleClickActionCache(Arc<Mutex<String>>);
 struct MouseMiddleRightActionCache(Arc<Mutex<String>>);
 struct MouseLeftMiddleActionCache(Arc<Mutex<String>>);
+struct MouseLeftRightActionCache(Arc<Mutex<String>>);
 
 /// Platform-agnostic mouse button events forwarded to the gesture state machine.
 #[derive(Debug)]
@@ -86,11 +87,72 @@ extern "C" {
         key_down: bool,
     ) -> *mut std::ffi::c_void;
     fn CGEventPost(tap_location: u32, event: *mut std::ffi::c_void);
+    fn CGEventSetFlags(event: *mut std::ffi::c_void, flags: u64);
     fn CFRelease(cf: *mut std::ffi::c_void);
     // Reads the current pressed state of a mouse button without installing an
     // event tap — needs no Accessibility grant for mouse buttons, and leaves
     // nothing for the OS to disable. Used by the polling mouse listener.
     fn CGEventSourceButtonState(state_id: u32, button: u32) -> bool;
+    // Reads the current keyboard modifier flags (Cmd/Alt/Shift/Ctrl) the same
+    // permission-free way. Used to wait for the trigger hotkey's physical
+    // modifiers to be released before posting a synthetic chord.
+    fn CGEventSourceFlagsState(state_id: u32) -> u64;
+}
+
+/// Post a synthetic Cmd+<virtual_key> chord at the HID event tap via CGEvent.
+/// Needs only ACCESSIBILITY — no Automation / "System Events" permission — unlike
+/// an osascript `keystroke ... using command down`. `virtual_key` is a macOS
+/// virtual keycode (kVK_ANSI_C = 8 for copy, kVK_ANSI_V = 9 for paste).
+///
+/// Blocks (bounded) until the user's physical modifier keys are released:
+/// events posted at the HID tap get the *hardware* modifier state OR-ed in, so
+/// posting Cmd+C while the Alt+Shift+E trigger hotkey is still held delivers
+/// Cmd+Alt+Shift+C — which target apps ignore, making capture silently fail.
+/// (The old osascript path survived this only because process spawn added
+/// 150-300 ms of accidental delay.)
+#[cfg(target_os = "macos")]
+pub(crate) fn post_cmd_key(virtual_key: u16) {
+    const CMD_FLAG: u64 = 0x0010_0000; // kCGEventFlagMaskCommand
+    const HID_TAP: u32 = 0; // kCGHIDEventTap
+    const COMBINED_SESSION_STATE: u32 = 0; // kCGEventSourceStateCombinedSessionState
+    const MODIFIER_MASK: u64 = 0x0002_0000 // kCGEventFlagMaskShift
+        | 0x0004_0000 // kCGEventFlagMaskControl
+        | 0x0008_0000 // kCGEventFlagMaskAlternate
+        | 0x0010_0000; // kCGEventFlagMaskCommand
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        let flags = unsafe { CGEventSourceFlagsState(COMBINED_SESSION_STATE) };
+        if flags & MODIFIER_MASK == 0 {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                "post_cmd_key: modifiers still held after 1.5s (flags={:#x}); posting anyway",
+                flags
+            );
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    unsafe {
+        let down = CGEventCreateKeyboardEvent(std::ptr::null(), virtual_key, true);
+        if !down.is_null() {
+            CGEventSetFlags(down, CMD_FLAG);
+            CGEventPost(HID_TAP, down);
+            CFRelease(down);
+        }
+        let up = CGEventCreateKeyboardEvent(std::ptr::null(), virtual_key, false);
+        if !up.is_null() {
+            // Flags 0 on the key-up: a key-up still carrying the Command flag
+            // latches "Cmd held" into the session modifier state (verified: it
+            // never decays), which would make the wait-loop above stall 1.5s on
+            // every subsequent call. Shortcut dispatch happens on key-down, so
+            // the up needs no flags.
+            CGEventSetFlags(up, 0);
+            CGEventPost(HID_TAP, up);
+            CFRelease(up);
+        }
+    }
 }
 
 /// Session token for cloud providers. Set by the frontend after Better Auth login.
@@ -1148,6 +1210,9 @@ async fn resume_hotkey(
     reregister_all_hotkeys(&app, &config)
 }
 
+// Tauri commands take their args positionally to match the JS invoke; a struct
+// would just move the arg list into the frontend. The gesture set is small.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn update_mouse_triggers(
     app: tauri::AppHandle,
@@ -1157,6 +1222,7 @@ async fn update_mouse_triggers(
     middle_double_click_action: String,
     middle_right_action: String,
     left_middle_action: String,
+    left_right_action: String,
 ) -> Result<(), String> {
     let mut cfg = config_state.load().await.map_err(|e| e.to_string())?;
     cfg.mouse_triggers_enabled = enabled;
@@ -1164,27 +1230,31 @@ async fn update_mouse_triggers(
     cfg.mouse_middle_double_click_action = middle_double_click_action.clone();
     cfg.mouse_middle_right_action = middle_right_action.clone();
     cfg.mouse_left_middle_action = left_middle_action.clone();
+    cfg.mouse_left_right_action = left_right_action.clone();
     config_state.save(&cfg).await.map_err(|e| e.to_string())?;
 
-    // Acquire all five caches simultaneously so a concurrent dispatch_mouse_action
+    // Acquire all caches simultaneously so a concurrent dispatch_mouse_action
     // cannot observe a partially-updated set (e.g. enabled=true but stale action).
-    if let (Some(c_en), Some(c_mc), Some(c_mdc), Some(c_mr), Some(c_lm)) = (
+    if let (Some(c_en), Some(c_mc), Some(c_mdc), Some(c_mr), Some(c_lm), Some(c_lr)) = (
         app.try_state::<MouseTriggersEnabledCache>(),
         app.try_state::<MouseMiddleClickActionCache>(),
         app.try_state::<MouseMiddleDoubleClickActionCache>(),
         app.try_state::<MouseMiddleRightActionCache>(),
         app.try_state::<MouseLeftMiddleActionCache>(),
+        app.try_state::<MouseLeftRightActionCache>(),
     ) {
         let mut g_en = c_en.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut g_mc = c_mc.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut g_mdc = c_mdc.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut g_mr = c_mr.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut g_lm = c_lm.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g_lr = c_lr.0.lock().unwrap_or_else(|e| e.into_inner());
         *g_en = enabled;
         *g_mc = middle_click_action;
         *g_mdc = middle_double_click_action;
         *g_mr = middle_right_action;
         *g_lm = left_middle_action;
+        *g_lr = left_right_action;
     }
     Ok(())
 }
@@ -1242,6 +1312,10 @@ async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
             Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             None => return,
         },
+        "left_right" => match app_handle.try_state::<MouseLeftRightActionCache>() {
+            Some(c) => c.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            None => return,
+        },
         _ => return,
     };
 
@@ -1291,6 +1365,18 @@ async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
                 let _ = app_handle.emit("pipeline:error", e.to_string());
             }
         }
+        "edit_selection" => {
+            let pipeline = app_handle.state::<pipeline::PipelineHandle>();
+            if pipeline.current_state() == pipeline::PipelineState::Idle {
+                if let Err(e) = pipeline.start_for_edit_selection().await {
+                    tracing::error!("Mouse trigger: edit-selection start failed: {}", e);
+                    let _ = app_handle.emit("pipeline:error", e.to_string());
+                }
+            } else if let Err(e) = pipeline.stop().await {
+                tracing::error!("Mouse trigger: edit-selection stop failed: {}", e);
+                let _ = app_handle.emit("pipeline:error", e.to_string());
+            }
+        }
         "confirm" => {
             // Simulate a Return key press+release at the HID level so the
             // frontmost app receives it as if the user pressed Enter.
@@ -1299,11 +1385,16 @@ async fn dispatch_mouse_action(gesture: String, app_handle: tauri::AppHandle) {
                 const K_VK_RETURN: u16 = 36;
                 let ev_down = CGEventCreateKeyboardEvent(std::ptr::null(), K_VK_RETURN, true);
                 if !ev_down.is_null() {
+                    // Explicit flags 0: a NULL-source event inherits the current
+                    // session modifier state, so a latched/held Cmd would turn
+                    // this into Cmd+Return ("send" in many apps).
+                    CGEventSetFlags(ev_down, 0);
                     CGEventPost(0, ev_down); // kCGHIDEventTap
                     CFRelease(ev_down);
                 }
                 let ev_up = CGEventCreateKeyboardEvent(std::ptr::null(), K_VK_RETURN, false);
                 if !ev_up.is_null() {
+                    CGEventSetFlags(ev_up, 0);
                     CGEventPost(0, ev_up);
                     CFRelease(ev_up);
                 }
@@ -1359,6 +1450,11 @@ async fn mouse_event_loop(
                             chord_dispatched = true;
                             let h = app_handle.clone();
                             tauri::async_runtime::spawn(dispatch_mouse_action("left_middle".to_owned(), h));
+                        } else if right_down {
+                            // Left+Right chord — no middle involved, so leave the
+                            // middle click counter / chord_dispatched untouched.
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("left_right".to_owned(), h));
                         }
                     }
                     MouseRawEvent::LeftUp => {
@@ -1399,6 +1495,10 @@ async fn mouse_event_loop(
                             chord_dispatched = true;
                             let h = app_handle.clone();
                             tauri::async_runtime::spawn(dispatch_mouse_action("middle_right".to_owned(), h));
+                        } else if left_down {
+                            // Left+Right chord
+                            let h = app_handle.clone();
+                            tauri::async_runtime::spawn(dispatch_mouse_action("left_right".to_owned(), h));
                         }
                     }
                     MouseRawEvent::RightUp => {
@@ -2087,6 +2187,9 @@ pub fn run() {
             ))));
             app.manage(MouseLeftMiddleActionCache(Arc::new(Mutex::new(
                 initial_config.mouse_left_middle_action.clone(),
+            ))));
+            app.manage(MouseLeftRightActionCache(Arc::new(Mutex::new(
+                initial_config.mouse_left_right_action.clone(),
             ))));
             start_mouse_listener(app_handle.clone());
 

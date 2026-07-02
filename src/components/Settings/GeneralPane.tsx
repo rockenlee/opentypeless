@@ -32,6 +32,7 @@ function MouseActionSelect({
     { value: 'translate', label: t('settings.actionToggleTranslate') },
     { value: 'agent', label: t('settings.actionAgent') },
     { value: 'confirm', label: t('settings.actionConfirm') },
+    { value: 'edit_selection', label: t('settings.actionEditSelection') },
     { value: 'none', label: t('settings.actionNone') },
   ]
   return (
@@ -63,6 +64,7 @@ function useMouseTriggerSave(
         middleDoubleClickAction: next.mouse_middle_double_click_action,
         middleRightAction: next.mouse_middle_right_action,
         leftMiddleAction: next.mouse_left_middle_action,
+        leftRightAction: next.mouse_left_right_action,
       })
     } catch {
       toast.error('Failed to save mouse trigger settings')
@@ -487,6 +489,13 @@ export function GeneralPane() {
               <MouseActionSelect
                 value={config.mouse_left_middle_action}
                 onChange={(v) => saveMouse({ mouse_left_middle_action: v })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-text-secondary">{t('settings.leftPlusRight')}</span>
+              <MouseActionSelect
+                value={config.mouse_left_right_action}
+                onChange={(v) => saveMouse({ mouse_left_right_action: v })}
               />
             </div>
           </div>
