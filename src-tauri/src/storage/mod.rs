@@ -360,6 +360,14 @@ impl HistoryStore {
         Ok(entries)
     }
 
+    /// Total number of history entries. The UI lists only the most recent
+    /// page (200), so the "total recordings" stat must not use list().len().
+    pub async fn count(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let n: u64 = conn.query_row("SELECT COUNT(*) FROM history", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
     pub async fn clear(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM history", [])?;

@@ -899,6 +899,11 @@ async fn get_history(
 }
 
 #[tauri::command]
+async fn get_history_count(state: tauri::State<'_, storage::HistoryStore>) -> Result<u64, String> {
+    state.count().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn clear_history(state: tauri::State<'_, storage::HistoryStore>) -> Result<(), String> {
     state.clear().await.map_err(|e| e.to_string())
 }
@@ -2453,6 +2458,7 @@ pub fn run() {
             bench_llm_connection,
             fetch_llm_models,
             get_history,
+            get_history_count,
             clear_history,
             delete_history_entry,
             get_dictionary,

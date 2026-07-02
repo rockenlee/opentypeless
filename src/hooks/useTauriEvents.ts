@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { useAppStore } from '../stores/appStore'
 import type { PipelineState } from '../stores/appStore'
-import { getHistory, notifyEditSelection } from '../lib/tauri'
+import { getHistory, getHistoryCount, notifyEditSelection } from '../lib/tauri'
 import { toast } from '../components/Toast'
 import i18n from '../i18n'
 
@@ -40,6 +40,7 @@ export function useTauriEvents() {
     setPipelineError,
     setAccessibilityTrusted,
     setHistory,
+    setHistoryCount,
     setAgentStatus,
     setAgentResult,
     setEditSelection,
@@ -91,6 +92,11 @@ export function useTauriEvents() {
           .then(setHistory)
           .catch((err) => {
             console.error('Failed to refresh history:', err)
+          })
+        getHistoryCount()
+          .then(setHistoryCount)
+          .catch((err) => {
+            console.error('Failed to refresh history count:', err)
           })
       }
     })
@@ -188,6 +194,7 @@ export function useTauriEvents() {
     setPipelineError,
     setAccessibilityTrusted,
     setHistory,
+    setHistoryCount,
     setAgentStatus,
     setAgentResult,
     setEditSelection,

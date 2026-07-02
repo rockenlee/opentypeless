@@ -10,6 +10,8 @@ import { toast } from '../Toast'
 export function History() {
   const history = useAppStore((s) => s.history)
   const setHistory = useAppStore((s) => s.setHistory)
+  const historyCount = useAppStore((s) => s.historyCount)
+  const setHistoryCount = useAppStore((s) => s.setHistoryCount)
   const setAgentResult = useAppStore((s) => s.setAgentResult)
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
@@ -69,6 +71,7 @@ export function History() {
     try {
       await clearHistory()
       setHistory([])
+      setHistoryCount(0)
       toast.success(t('history.clearedAll', { defaultValue: 'History cleared' }))
     } catch (e) {
       console.error('Failed to clear history:', e)
@@ -88,6 +91,7 @@ export function History() {
     try {
       await deleteHistoryEntry(id)
       setHistory(history.filter((h) => h.id !== id))
+      setHistoryCount(Math.max(0, historyCount - 1))
     } catch (e) {
       console.error('Failed to delete history entry:', e)
       toast.error(t('history.failedToDelete', { defaultValue: 'Failed to delete' }))

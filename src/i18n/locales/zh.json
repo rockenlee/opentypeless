@@ -103,12 +103,12 @@
     "accessibilityRequired": "需要辅助功能权限 — 请打开设置"
   },
   "editSelection": {
-    "badge": "正在编辑选区",
-    "rewriting": "正在改写选区…",
-    "rewritingSized": "正在改写选区 · 已选 {{words}} 词 / {{chars}} 字",
-    "replacing": "正在替换选区…",
+    "badge": "Editing",
+    "rewriting": "Rewriting…",
+    "rewritingSized": "Rewriting · {{words}}w / {{chars}}c",
+    "replacing": "Replacing…",
     "result": {
-      "success": "已替换选区 · 可按 Cmd/Ctrl+Z 撤销"
+      "success": "Replaced · Cmd/Ctrl+Z to undo"
     },
     "error": {
       "no_speech": "未检测到语音。请说出如何修改选区（例如“改短一点”）后重试。",

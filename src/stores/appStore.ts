@@ -134,6 +134,9 @@ interface AppState {
   // History
   history: HistoryEntry[]
   setHistory: (h: HistoryEntry[]) => void
+  /** True total in the DB — `history` holds only the latest page (200). */
+  historyCount: number
+  setHistoryCount: (n: number) => void
 
   // Dictionary
   dictionary: DictionaryEntry[]
@@ -273,6 +276,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   history: [],
   setHistory: (history) => set({ history }),
+  historyCount: 0,
+  setHistoryCount: (historyCount) => set({ historyCount }),
 
   dictionary: [],
   setDictionary: (dictionary) => set({ dictionary }),

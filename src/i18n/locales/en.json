@@ -103,12 +103,12 @@
     "accessibilityRequired": "Accessibility needed — open Settings"
   },
   "editSelection": {
-    "badge": "Editing selection",
-    "rewriting": "Rewriting selection…",
-    "rewritingSized": "Rewriting selection · {{words}} words / {{chars}} chars",
-    "replacing": "Replacing selection…",
+    "badge": "Editing",
+    "rewriting": "Rewriting…",
+    "rewritingSized": "Rewriting · {{words}}w / {{chars}}c",
+    "replacing": "Replacing…",
     "result": {
-      "success": "Selection replaced · press Cmd/Ctrl+Z to undo"
+      "success": "Replaced · Cmd/Ctrl+Z to undo"
     },
     "error": {
       "no_speech": "No speech detected. Say how to change the selection (e.g. 'make it shorter') and try again.",
