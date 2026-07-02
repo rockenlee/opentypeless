@@ -1,7 +1,7 @@
 {
   "name": "opentypeless",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.6",
   "type": "module",
   "description": "AI-powered speech-to-text and text polishing desktop app",
   "keywords": [
