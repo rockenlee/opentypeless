@@ -5,10 +5,13 @@ stt = "stt"
 llm = "llm"
 byok = "byok"
 hotkey = "hotkey"
+# Intentional typo in an Edit Selection "fix typos" test fixture (pipeline.rs)
+teh = "teh"
 
 [files]
 extend-exclude = [
   "*.lock",
+  "docs/images/",
   "node_modules/",
   "target/",
   "dist/",
