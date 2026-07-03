@@ -106,12 +106,21 @@ export function useCapsuleResize() {
         // Subsequent resizes: left edge + vertical center stay fixed.
         // Since content is always padded 12px each side, the capsule at x=12
         // is identical to a centered capsule — so the mic icon never moves.
+        //
+        // Reposition ONLY when the window's monitor is known. outerPosition()
+        // is PHYSICAL pixels and must be divided by the monitor's scale to get
+        // logical coordinates; when the window is hidden (the idle transition
+        // resize) currentMonitor() returns null, and the old `scale ?? 1`
+        // fallback wrote physical pixels back as logical — doubling the
+        // position on every pipeline cycle until the capsule sat millions of
+        // pixels off-screen (observed at exactly initial×2^14) and "never
+        // popped up again" until an app restart re-centered it.
         const prev = prevWindowSize.current
-        if (prev) {
+        const monitor = prev ? await currentMonitor() : null
+        if (prev && monitor) {
           const pos = await win.outerPosition().catch(() => null)
           if (pos) {
-            const monitor = await currentMonitor()
-            const scale = monitor?.scaleFactor ?? 1
+            const scale = monitor.scaleFactor
             const oldLeftX = pos.x / scale
             const oldCenterY = pos.y / scale + prev.height / 2
             const newX = Math.round(oldLeftX)
@@ -120,19 +129,17 @@ export function useCapsuleResize() {
             // off-screen. macOS Dock is typically ~80px tall when shown; we
             // keep an extra 16px safety margin. Without this, accidental
             // dragging eventually parks the capsule below the visible area.
-            if (monitor) {
-              const screenH = monitor.size.height / monitor.scaleFactor
-              const maxY = screenH - windowHeight - 96 // 80 Dock + 16 margin
-              const minY = 28 // 24 menu bar + 4 margin
-              if (newY > maxY) newY = maxY
-              if (newY < minY) newY = minY
-            }
+            const screenH = monitor.size.height / monitor.scaleFactor
+            const maxY = screenH - windowHeight - 96 // 80 Dock + 16 margin
+            const minY = 28 // 24 menu bar + 4 margin
+            if (newY > maxY) newY = maxY
+            if (newY < minY) newY = minY
             await win.setPosition(new LogicalPosition(newX, newY)).catch(() => {})
-            await win.setSize(new LogicalSize(windowWidth, windowHeight)).catch(() => {})
-          } else {
-            await win.setSize(new LogicalSize(windowWidth, windowHeight)).catch(() => {})
           }
+          await win.setSize(new LogicalSize(windowWidth, windowHeight)).catch(() => {})
         } else {
+          // Monitor unknown (hidden window) — never touch the position, only
+          // the size. The position stays wherever it was last correctly placed.
           await win.setSize(new LogicalSize(windowWidth, windowHeight)).catch(() => {})
         }
 

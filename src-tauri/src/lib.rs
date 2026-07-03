@@ -2068,16 +2068,65 @@ mod tests {
         }
     }
 }
+/// Platform log directory, mirroring tauri's app_data_dir convention. Built by
+/// hand because logging must start BEFORE the tauri app (plugin init, the
+/// stale-socket guard, and setup all log). Finder/Explorer launches discard
+/// stdout entirely, so without this file every field incident is unforensicable.
+fn log_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME").map(|h| {
+        std::path::PathBuf::from(h).join("Library/Application Support/com.opentypeless.app")
+    });
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA")
+        .map(|a| std::path::PathBuf::from(a).join("com.opentypeless.app"));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let base = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/com.opentypeless.app"));
+    base.map(|b| b.join("logs"))
+}
+
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive(
-                "opentypeless=debug"
-                    .parse()
-                    .expect("static directive is valid"),
-            ),
-        )
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = EnvFilter::from_default_env().add_directive(
+        "opentypeless=debug"
+            .parse()
+            .expect("static directive is valid"),
+    );
+
+    // stdout (terminal launches) + a daily-rotated file capped at 7 days
+    // (Finder launches). File writes go through the appender's own mutex; log
+    // volume here is far too low for that to matter.
+    let file_layer = log_dir()
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            tracing_appender::rolling::Builder::new()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("opentypeless")
+                .filename_suffix("log")
+                .max_log_files(7)
+                .build(&dir)
+                .ok()
+        })
+        .map(|appender| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(appender)
+                .with_ansi(false)
+        });
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(file_layer)
         .init();
+
+    if let Some(dir) = log_dir() {
+        tracing::info!("File logging: {} (daily rotation, keep 7)", dir.display());
+    } else {
+        tracing::warn!("File logging disabled: no home directory resolved");
+    }
 
     // A previous instance that died without cleanup (kill -9, crash, power
     // loss) leaves the single-instance socket behind. The plugin then treats
