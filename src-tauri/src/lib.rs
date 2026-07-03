@@ -2079,6 +2079,27 @@ pub fn run() {
         )
         .init();
 
+    // A previous instance that died without cleanup (kill -9, crash, power
+    // loss) leaves the single-instance socket behind. The plugin then treats
+    // the stale socket as a live primary and silently forwards-and-exits: the
+    // app "flashes" once and never opens — no window, no error, no crash
+    // report — which users read as a spontaneous crash. If the socket exists
+    // but nobody is listening, it is stale: remove it before the plugin binds.
+    // (Path = bundle identifier with dots replaced by underscores + "_si".)
+    #[cfg(unix)]
+    {
+        let sock = std::path::Path::new("/tmp/com_opentypeless_app_si.sock");
+        if sock.exists() && std::os::unix::net::UnixStream::connect(sock).is_err() {
+            match std::fs::remove_file(sock) {
+                Ok(()) => tracing::warn!(
+                    "Removed stale single-instance socket left by a dead instance \
+                     (would have caused a silent exit at launch)"
+                ),
+                Err(e) => tracing::error!("Failed to remove stale single-instance socket: {e}"),
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
