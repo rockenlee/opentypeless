@@ -82,10 +82,16 @@ export function useCapsuleResize() {
           try {
             const monitor = await currentMonitor()
             if (monitor) {
+              // Global coordinates: monitor origin + monitor-local offset. The
+              // old math dropped the origin, which on multi-monitor setups
+              // planted the capsule relative to (0,0) using ANOTHER monitor's
+              // size — e.g. below the laptop screen, invisible.
+              const mx = monitor.position.x / monitor.scaleFactor
+              const my = monitor.position.y / monitor.scaleFactor
               const sw = monitor.size.width / monitor.scaleFactor
               const sh = monitor.size.height / monitor.scaleFactor
-              const x = Math.round(sw / 2 - windowWidth / 2)
-              const y = Math.round(sh - windowHeight - 80)
+              const x = Math.round(mx + sw / 2 - windowWidth / 2)
+              const y = Math.round(my + sh - windowHeight - 80)
               await win.setPosition(new LogicalPosition(x, y)).catch(() => {})
             }
             // If auto-hide is on, don't show on first mount (will show when recording starts)
@@ -129,9 +135,10 @@ export function useCapsuleResize() {
             // off-screen. macOS Dock is typically ~80px tall when shown; we
             // keep an extra 16px safety margin. Without this, accidental
             // dragging eventually parks the capsule below the visible area.
+            const monTop = monitor.position.y / monitor.scaleFactor
             const screenH = monitor.size.height / monitor.scaleFactor
-            const maxY = screenH - windowHeight - 96 // 80 Dock + 16 margin
-            const minY = 28 // 24 menu bar + 4 margin
+            const maxY = monTop + screenH - windowHeight - 96 // 80 Dock + 16 margin
+            const minY = monTop + 28 // 24 menu bar + 4 margin
             if (newY > maxY) newY = maxY
             if (newY < minY) newY = minY
             await win.setPosition(new LogicalPosition(newX, newY)).catch(() => {})

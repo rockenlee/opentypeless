@@ -285,6 +285,7 @@ impl PipelineHandle {
                 if matches!(new_state, PipelineState::Idle) {
                     let _ = capsule.hide();
                 } else {
+                    ensure_capsule_on_screen(&capsule);
                     let _ = capsule.show();
                     let _ = capsule.set_always_on_top(true);
                 }
@@ -1709,6 +1710,71 @@ fn edit_selection_still_replaceable(original: &str, current: Option<&str>) -> bo
 /// gone/changed (`after_paste` is None or differs) → returns false → success.
 fn edit_selection_paste_rejected(original: &str, after_paste: Option<&str>) -> bool {
     edit_selection_still_replaceable(original, after_paste)
+}
+
+/// Never show the capsule off-screen. Multi-monitor positioning bugs (and
+/// monitor unplugs) can park the window at coordinates no display covers; the
+/// pipeline then looks dead while recording works ("the capsule never pops
+/// up"). If the window's frame intersects no monitor, move it to the bottom-
+/// center of the monitor under the cursor (fallback: the first monitor). A
+/// capsule the user dragged somewhere visible is left alone. All math is in
+/// physical pixels — the unit of every tauri Rust window/monitor API.
+fn ensure_capsule_on_screen(win: &tauri::WebviewWindow) {
+    let (Ok(pos), Ok(size), Ok(monitors)) = (
+        win.outer_position(),
+        win.outer_size(),
+        win.available_monitors(),
+    ) else {
+        return;
+    };
+    if monitors.is_empty() {
+        return;
+    }
+    let intersects = |mx: i32, my: i32, mw: i32, mh: i32| {
+        pos.x + (size.width as i32) > mx
+            && pos.x < mx + mw
+            && pos.y + (size.height as i32) > my
+            && pos.y < my + mh
+    };
+    if monitors.iter().any(|m| {
+        intersects(
+            m.position().x,
+            m.position().y,
+            m.size().width as i32,
+            m.size().height as i32,
+        )
+    }) {
+        return;
+    }
+
+    let cursor = win.app_handle().cursor_position().ok();
+    let target = cursor
+        .and_then(|c| {
+            monitors
+                .iter()
+                .find(|m| {
+                    let (mx, my) = (m.position().x as f64, m.position().y as f64);
+                    let (mw, mh) = (m.size().width as f64, m.size().height as f64);
+                    c.x >= mx && c.x < mx + mw && c.y >= my && c.y < my + mh
+                })
+                .cloned()
+        })
+        .unwrap_or_else(|| monitors[0].clone());
+
+    let (mx, my) = (target.position().x, target.position().y);
+    let (mw, mh) = (target.size().width as i32, target.size().height as i32);
+    // Bottom-center with a Dock-sized margin, scaled to physical pixels.
+    let margin = (96.0 * target.scale_factor()) as i32;
+    let x = mx + (mw - size.width as i32) / 2;
+    let y = my + mh - size.height as i32 - margin;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    tracing::info!(
+        "capsule was off-screen at ({}, {}); recentered to ({}, {})",
+        pos.x,
+        pos.y,
+        x,
+        y
+    );
 }
 
 /// Word count for Edit Selection length limits: whitespace-separated tokens.
