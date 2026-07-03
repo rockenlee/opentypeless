@@ -112,6 +112,7 @@
     },
     "error": {
       "no_speech": "No speech detected. Say how to change the selection (e.g. 'make it shorter') and try again.",
+      "stt_failed": "Speech recognition failed — network or service unreachable. Nothing was changed. Check your connection and try again.",
       "permission_capture": "Can't read the selection — grant Accessibility permission so OpenTypeless can read and replace selected text, then try again.",
       "no_selection": "No text selected. Select the text you want to edit first, then try again.",
       "too_long": "Selection is too long. Shorten it (max 1000 words / 6000 characters) and try again.",

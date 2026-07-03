@@ -218,6 +218,10 @@ pub struct PipelineHandle {
     preloaded_dictionary: Arc<Mutex<Option<Vec<String>>>>,
     preloaded_selected_text: Arc<Mutex<Option<String>>>,
     recording_start: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Set by the STT task when transcription failed (connection/provider
+    /// error) so an empty transcript can be reported as a service failure
+    /// instead of blaming the user with "no speech detected".
+    stt_errored: Arc<AtomicBool>,
     shared_client: reqwest::Client,
     /// Serializes start()/stop() so that stop() waits for start() to finish
     /// its setup before reading shared state (preloaded_config, audio_handle, etc.).
@@ -244,6 +248,7 @@ impl PipelineHandle {
             preloaded_dictionary: Arc::new(Mutex::new(None)),
             preloaded_selected_text: Arc::new(Mutex::new(None)),
             recording_start: Arc::new(Mutex::new(None)),
+            stt_errored: Arc::new(AtomicBool::new(false)),
             shared_client: reqwest::Client::new(),
             pipeline_lock: tokio::sync::Mutex::new(()),
         }
@@ -505,6 +510,7 @@ impl PipelineHandle {
 
         // Reset abort flag for new recording
         self.abort_flag.store(false, Ordering::SeqCst);
+        self.stt_errored.store(false, Ordering::SeqCst);
 
         // Atomic CAS: only one caller can transition Idle → Recording. A failed
         // CAS means another start already holds the pipeline — this call started
@@ -725,6 +731,7 @@ impl PipelineHandle {
         let stt_done = self.stt_done.clone();
         let finalize_stt = self.finalize_stt.clone();
         let abort_flag = self.abort_flag.clone();
+        let stt_errored = self.stt_errored.clone();
 
         tokio::spawn(async move {
             // Forward audio to STT until EITHER the audio channel closes (clean
@@ -767,11 +774,13 @@ impl PipelineHandle {
                             }
                             Ok(Some(TranscriptEvent::Error { message })) => {
                                 tracing::error!("STT error: {}", message);
+                                stt_errored.store(true, Ordering::SeqCst);
                                 let _ = app_handle.emit("pipeline:error", format!("STT error: {message}"));
                                 break;
                             }
                             Err(e) => {
                                 tracing::error!("STT recv error: {}", e);
+                                stt_errored.store(true, Ordering::SeqCst);
                                 break;
                             }
                             _ => {}
@@ -795,6 +804,7 @@ impl PipelineHandle {
                     Ok(None) => {}
                     Err(e) => {
                         tracing::error!("STT disconnect error: {}", e);
+                        stt_errored.store(true, Ordering::SeqCst);
                         let _ = app_handle.emit("pipeline:error", format!("STT error: {e}"));
                     }
                 }
@@ -1015,10 +1025,24 @@ impl PipelineHandle {
                 .map(|d| d < std::time::Duration::from_millis(500))
                 .unwrap_or(false);
             if !was_a_misfire {
+                // Distinguish "the speech service failed" (network down, provider
+                // error) from "nothing was said" — an outage used to surface as
+                // "no speech detected", blaming the user for a dead connection.
+                let stt_failed = self.stt_errored.load(Ordering::SeqCst);
                 if force_edit_selection {
                     // Edit Selection must stay in its own, localized failure lane —
                     // never fall back to the normal dictation English error.
-                    self.emit_edit_result("fail", "no_speech", "");
+                    let code = if stt_failed {
+                        "stt_failed"
+                    } else {
+                        "no_speech"
+                    };
+                    self.emit_edit_result("fail", code, "");
+                } else if stt_failed {
+                    let _ = self.app_handle.emit(
+                        "pipeline:error",
+                        "Speech recognition failed — check your network connection and try again.",
+                    );
                 } else {
                     let _ = self
                         .app_handle
