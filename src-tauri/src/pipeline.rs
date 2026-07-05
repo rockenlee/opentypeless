@@ -222,6 +222,12 @@ pub struct PipelineHandle {
     /// error) so an empty transcript can be reported as a service failure
     /// instead of blaming the user with "no speech detected".
     stt_errored: Arc<AtomicBool>,
+    /// Set true by the STT consume loop when ANY audio chunk arrives from the
+    /// capture thread. Lets stop() tell a genuinely silent take (data flowed
+    /// but quiet) apart from a stuck mic (zero data — another app grabbed it
+    /// and this process's CoreAudio went dead; a fresh cpal stream doesn't
+    /// recover, only a process restart does).
+    audio_received: Arc<AtomicBool>,
     shared_client: reqwest::Client,
     /// Serializes start()/stop() so that stop() waits for start() to finish
     /// its setup before reading shared state (preloaded_config, audio_handle, etc.).
@@ -249,6 +255,7 @@ impl PipelineHandle {
             preloaded_selected_text: Arc::new(Mutex::new(None)),
             recording_start: Arc::new(Mutex::new(None)),
             stt_errored: Arc::new(AtomicBool::new(false)),
+            audio_received: Arc::new(AtomicBool::new(false)),
             shared_client: reqwest::Client::new(),
             pipeline_lock: tokio::sync::Mutex::new(()),
         }
@@ -512,6 +519,9 @@ impl PipelineHandle {
         // Reset abort flag for new recording
         self.abort_flag.store(false, Ordering::SeqCst);
         self.stt_errored.store(false, Ordering::SeqCst);
+        // Track whether the capture thread delivers ANY audio this take, so
+        // stop() can tell a stuck mic (zero chunks) from a silent take.
+        self.audio_received.store(false, Ordering::SeqCst);
 
         // Atomic CAS: only one caller can transition Idle → Recording. A failed
         // CAS means another start already holds the pipeline — this call started
@@ -733,6 +743,7 @@ impl PipelineHandle {
         let finalize_stt = self.finalize_stt.clone();
         let abort_flag = self.abort_flag.clone();
         let stt_errored = self.stt_errored.clone();
+        let audio_received = self.audio_received.clone();
 
         tokio::spawn(async move {
             // Forward audio to STT until EITHER the audio channel closes (clean
@@ -746,6 +757,7 @@ impl PipelineHandle {
                     chunk = audio_rx.recv() => {
                         match chunk {
                             Some(data) => {
+                                audio_received.store(true, Ordering::Relaxed);
                                 let _ = provider.send_audio(&data).await;
                             }
                             // Audio channel closed (clean EOF).
@@ -756,6 +768,7 @@ impl PipelineHandle {
                         // Explicit stop/abort signal: drain whatever real audio is
                         // still buffered, then stop reading and finalize.
                         while let Ok(data) = audio_rx.try_recv() {
+                            audio_received.store(true, Ordering::Relaxed);
                             let _ = provider.send_audio(&data).await;
                         }
                         break;
@@ -1026,6 +1039,21 @@ impl PipelineHandle {
                 .map(|d| d < std::time::Duration::from_millis(500))
                 .unwrap_or(false);
             if !was_a_misfire {
+                if !self.audio_received.load(Ordering::SeqCst) {
+                    // Long enough to expect audio, yet the capture thread delivered
+                    // ZERO chunks: the mic is stuck (another app grabbed it and this
+                    // process's audio went dead — a fresh cpal stream won't recover,
+                    // only a process restart does). Auto-restart to recover; the
+                    // marker-file guard inside turns a persistent grab into a clear
+                    // error instead of a restart loop.
+                    self.recover_stuck_mic();
+                    *self
+                        .recording_start
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = None;
+                    self.set_state(PipelineState::Idle);
+                    return Ok(());
+                }
                 // Distinguish "the speech service failed" (network down, provider
                 // error) from "nothing was said" — an outage used to surface as
                 // "no speech detected", blaming the user for a dead connection.
@@ -1596,6 +1624,50 @@ impl PipelineHandle {
     /// Emit an Edit Selection outcome for the frontend to localize and surface.
     /// `status` is "success" | "fallback" | "fail"; `code` maps to an i18n key
     /// (empty for success); `app` is the target app name for interpolation.
+    /// The microphone went dead mid-session: another audio app grabbed it and
+    /// on macOS this process's CoreAudio stops delivering samples — a fresh
+    /// cpal stream does NOT recover, only relaunching the process does.
+    /// Auto-restart to recover. A marker file (which survives the restart)
+    /// guards against a loop: if we already restarted within the last 90s and
+    /// the mic is STILL dead, the cause is persistent (the other app still
+    /// holds the mic), so show a clear message instead of restarting again.
+    fn recover_stuck_mic(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let marker = self
+            .app_handle
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join(".last_audio_restart"));
+        let last = marker
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        if let Some(last) = last {
+            if now.saturating_sub(last) < 90 {
+                tracing::warn!(
+                    "Mic still dead {}s after an auto-restart — not looping; asking user to free the mic",
+                    now.saturating_sub(last)
+                );
+                let _ = self.app_handle.emit(
+                    "pipeline:error",
+                    "麦克风无信号,可能被其他录音应用(如 Typeless / 会议软件)占用,请关闭后重试。",
+                );
+                return;
+            }
+        }
+        if let Some(p) = marker {
+            let _ = std::fs::write(&p, now.to_string());
+        }
+        tracing::warn!(
+            "Microphone delivered no audio (stuck) — auto-restarting OpenTypeless to recover"
+        );
+        self.app_handle.restart();
+    }
+
     fn emit_edit_result(&self, status: &str, code: &str, app: &str) {
         // Every Edit Selection outcome in one log line: the fail/fallback lanes
         // were event-emit-only, which made "why didn't it paste?" undiagnosable
