@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "opentypeless"
-version = "0.2.7"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "arboard",
